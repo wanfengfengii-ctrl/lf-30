@@ -383,9 +383,22 @@ def page_analysis():
         fig, ax = plt.subplots(figsize=(10, 8))
         if len(G.nodes) > 0:
             pos = nx.spring_layout(G, seed=42)
+
             edge_colors = []
-            for u, v in G.edges:
-                rs = G[u][v].get("review_status", "待审核")
+            edge_widths = []
+            edge_labels = {}
+            connection_styles = []
+
+            pair_edge_count = {}
+            for u, v, key in G.edges(keys=True):
+                pair = tuple(sorted([u, v]))
+                if pair not in pair_edge_count:
+                    pair_edge_count[pair] = 0
+                idx = pair_edge_count[pair]
+                pair_edge_count[pair] += 1
+
+                edge_data = G[u][v][key]
+                rs = edge_data.get("review_status", "待审核")
                 if rs == "已通过":
                     edge_colors.append("#2ECC71")
                 elif rs == "已拒绝":
@@ -395,14 +408,48 @@ def page_analysis():
                 else:
                     edge_colors.append("#95A5A6")
 
-            edge_widths = [G[u][v].get("similarity", 0.5) * 5 for u, v in G.edges]
-            nx.draw(
-                G, pos, ax=ax, with_labels=True, node_color="#4ECDC4",
-                node_size=1200, font_size=10, font_weight="bold",
-                width=edge_widths, edge_color=edge_colors, alpha=0.85,
-            )
-            edge_labels = {(u, v): f"{G[u][v]['similarity']:.2f}" for u, v in G.edges}
-            nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=8, ax=ax)
+                edge_widths.append(edge_data.get("similarity", 0.5) * 5)
+
+                if idx == 0:
+                    connection_styles.append("arc3,rad=0.0")
+                else:
+                    rad = 0.15 * (idx if idx % 2 == 1 else -idx)
+                    connection_styles.append(f"arc3,rad={rad}")
+
+                sim = edge_data.get("similarity", 0.0)
+                edge_a = edge_data.get("edge_a_id", "")
+                edge_b = edge_data.get("edge_b_id", "")
+                edge_labels[(u, v, key)] = f"{sim:.2f}\n[{edge_a}-{edge_b}]"
+
+            nx.draw_networkx_nodes(G, pos, ax=ax, node_color="#4ECDC4",
+                                   node_size=1200)
+            nx.draw_networkx_labels(G, pos, ax=ax, font_size=10, font_weight="bold")
+
+            for (u, v, key), color, width, conn_style in zip(
+                G.edges(keys=True), edge_colors, edge_widths, connection_styles
+            ):
+                nx.draw_networkx_edges(
+                    G, pos, ax=ax, edgelist=[(u, v, key)],
+                    edge_color=[color], width=[width], alpha=0.85,
+                    connectionstyle=conn_style,
+                )
+
+            for (u, v, key), label in edge_labels.items():
+                edge_data = G[u][v][key]
+                pair = tuple(sorted([u, v]))
+                idx_in_pair = list(pair_edge_count.keys()).index(pair)
+                rad = 0.0
+                if pair_edge_count[pair] > 1:
+                    all_keys = [k for a, b, k in G.edges(keys=True)
+                                if tuple(sorted([a, b])) == pair]
+                    idx = all_keys.index(key)
+                    if idx > 0:
+                        rad = 0.15 * (idx if idx % 2 == 1 else -idx)
+                nx.draw_networkx_edge_labels(
+                    G, pos, edge_labels={(u, v): label},
+                    font_size=7, ax=ax, label_pos=0.5,
+                    rotate=False,
+                )
 
             from matplotlib.lines import Line2D
             legend_elements = [
@@ -413,7 +460,7 @@ def page_analysis():
             ]
             ax.legend(handles=legend_elements, loc="upper right", fontsize=8)
 
-        ax.set_title("拼接候选图谱（颜色表示审核状态）")
+        ax.set_title("拼接候选图谱（颜色表示审核状态，弧线表示多边缘）")
         st.pyplot(fig)
         plt.close(fig)
 
@@ -573,7 +620,10 @@ def page_schemes():
 
             with c2:
                 if st.button("📊 导出分析包", key=f"export_pkg_{scheme.id}"):
-                    pkg = generate_analysis_package(scheme, st.session_state.fragments, st.session_state.operation_logs)
+                    pkg = generate_analysis_package(
+                        scheme, st.session_state.schemes,
+                        st.session_state.fragments, st.session_state.operation_logs
+                    )
                     pkg_json = json.dumps(pkg, ensure_ascii=False, indent=2)
                     st.download_button(
                         "⬇️ 下载完整分析包",
@@ -652,17 +702,27 @@ def page_compare():
         st.info("至少需要2个方案才能进行对比")
         return
 
-    scheme_map = {s.name: s for s in st.session_state.schemes}
-    scheme_names = list(scheme_map.keys())
+    scheme_map = {s.id: s for s in st.session_state.schemes}
+    scheme_labels = {s.id: f"{s.name} (ID: {s.id[:8]}...)" for s in st.session_state.schemes}
+    scheme_ids = list(scheme_map.keys())
 
     col_a, col_b = st.columns(2)
     with col_a:
-        name_a = st.selectbox("方案 A", scheme_names, key="cmp_scheme_a")
+        id_a = st.selectbox(
+            "方案 A", scheme_ids,
+            format_func=lambda x: scheme_labels[x],
+            key="cmp_scheme_a"
+        )
     with col_b:
-        name_b = st.selectbox("方案 B", [n for n in scheme_names if n != name_a] or scheme_names, key="cmp_scheme_b")
+        available_b = [sid for sid in scheme_ids if sid != id_a] or scheme_ids
+        id_b = st.selectbox(
+            "方案 B", available_b,
+            format_func=lambda x: scheme_labels[x],
+            key="cmp_scheme_b"
+        )
 
-    scheme_a = scheme_map[name_a]
-    scheme_b = scheme_map[name_b]
+    scheme_a = scheme_map[id_a]
+    scheme_b = scheme_map[id_b]
 
     if st.button("执行对比", key="run_compare"):
         diff = compare_schemes(scheme_a, scheme_b, st.session_state.fragments)

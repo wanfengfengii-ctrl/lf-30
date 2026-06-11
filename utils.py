@@ -128,13 +128,14 @@ def find_candidate_matches(fragments, similarity_threshold=0.40):
 
 
 def build_candidate_graph(fragments, matches):
-    G = nx.Graph()
+    G = nx.MultiGraph()
     for f in fragments:
         G.add_node(f.id, label=f.id)
-    for m in matches:
+    for idx, m in enumerate(matches):
         G.add_edge(
             m.edge_a_fragment_id,
             m.edge_b_fragment_id,
+            key=idx,
             similarity=m.similarity,
             edge_a_id=m.edge_a_id,
             edge_b_id=m.edge_b_id,
@@ -565,7 +566,7 @@ def validate_import_data(data, existing_fragments, existing_schemes):
     return report
 
 
-def generate_analysis_package(scheme, fragments, operation_logs=None):
+def generate_analysis_package(scheme, all_schemes, fragments, operation_logs=None):
     package = {
         "package_info": {
             "generated_at": now_str(),
@@ -592,7 +593,7 @@ def generate_analysis_package(scheme, fragments, operation_logs=None):
         if frag.id in involved_frag_ids:
             package["fragments"].append(frag.to_dict())
 
-    conflicts = compute_scheme_conflicts(scheme, [scheme], fragments)
+    conflicts = compute_scheme_conflicts(scheme, all_schemes, fragments)
     package["conflict_analysis"] = conflicts
 
     if operation_logs:
