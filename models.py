@@ -58,6 +58,15 @@ class OperationType(Enum):
     DATA_IMPORT = "导入数据"
     DATA_EXPORT = "导出数据"
     CONFLICT_DETECT = "冲突检测"
+    TAG_ADD = "添加标签"
+    TAG_DELETE = "删除标签"
+    TAG_UPDATE = "更新标签"
+    ANNOTATION_ADD = "添加标注"
+    ANNOTATION_UPDATE = "更新标注"
+    ANNOTATION_DELETE = "删除标注"
+    SEARCH_RUN = "执行检索"
+    CLUSTER_RUN = "执行聚类"
+    RECOMMEND_RUN = "执行推荐"
 
 
 class ConflictType(Enum):
@@ -65,6 +74,23 @@ class ConflictType(Enum):
     FRAGMENT_LOCK = "锁定残片冲突"
     SCHEME_DIRECTION = "方向矛盾冲突"
     REVIEW_DISPUTE = "争议匹配冲突"
+
+
+class TagCategory(Enum):
+    GLYPH_COMPONENT = "字形部件"
+    KNIFE_MARK = "刀痕形态"
+    WEATHERING = "风化特征"
+    EDGE_TEXTURE = "边缘纹理"
+    INSCRIPTION_TAG = "题跋标签"
+    RESEARCH_TAG = "研究标签"
+    CUSTOM = "自定义"
+
+
+class SchemeOwnershipStatus(Enum):
+    UNASSIGNED = "未归属"
+    CANDIDATE = "候选归属"
+    LOCKED = "已锁定归属"
+    CONFLICTED = "归属冲突"
 
 
 @dataclass
@@ -498,4 +524,220 @@ class ConflictInfo:
             involved_fragments=d.get("involved_fragments", []),
             involved_edges=d.get("involved_edges", []),
             details=d.get("details", ""),
+        )
+
+
+@dataclass
+class CustomTag:
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    name: str = ""
+    category: TagCategory = TagCategory.CUSTOM
+    description: str = ""
+    color: str = "#4ECDC4"
+    created_by: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "category": self.category.value,
+            "description": self.description,
+            "color": self.color,
+            "created_by": self.created_by,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            id=d.get("id", uuid.uuid4().hex[:8]),
+            name=d.get("name", ""),
+            category=TagCategory(d.get("category", "自定义")),
+            description=d.get("description", ""),
+            color=d.get("color", "#4ECDC4"),
+            created_by=d.get("created_by", ""),
+            created_at=d.get("created_at", ""),
+            updated_at=d.get("updated_at", ""),
+        )
+
+
+@dataclass
+class SemanticAnnotation:
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    fragment_id: str = ""
+    glyph_components: list = field(default_factory=list)
+    knife_marks: list = field(default_factory=list)
+    weathering_features: list = field(default_factory=list)
+    edge_textures: list = field(default_factory=list)
+    inscription_content: str = ""
+    inscription_tags: list = field(default_factory=list)
+    research_notes: str = ""
+    research_tags: list = field(default_factory=list)
+    custom_tags: list = field(default_factory=list)
+    custom_tag_ids: list = field(default_factory=list)
+    annotated_by: str = ""
+    annotated_at: str = ""
+    updated_at: str = ""
+
+    def get_all_tag_ids(self):
+        all_tags = set(self.glyph_components) | set(self.knife_marks) | \
+                   set(self.weathering_features) | set(self.edge_textures) | \
+                   set(self.inscription_tags) | set(self.research_tags) | \
+                   set(self.custom_tag_ids)
+        return all_tags
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "fragment_id": self.fragment_id,
+            "glyph_components": self.glyph_components,
+            "knife_marks": self.knife_marks,
+            "weathering_features": self.weathering_features,
+            "edge_textures": self.edge_textures,
+            "inscription_content": self.inscription_content,
+            "inscription_tags": self.inscription_tags,
+            "research_notes": self.research_notes,
+            "research_tags": self.research_tags,
+            "custom_tags": self.custom_tags,
+            "custom_tag_ids": self.custom_tag_ids,
+            "annotated_by": self.annotated_by,
+            "annotated_at": self.annotated_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            id=d.get("id", uuid.uuid4().hex[:8]),
+            fragment_id=d.get("fragment_id", ""),
+            glyph_components=d.get("glyph_components", []),
+            knife_marks=d.get("knife_marks", []),
+            weathering_features=d.get("weathering_features", []),
+            edge_textures=d.get("edge_textures", []),
+            inscription_content=d.get("inscription_content", ""),
+            inscription_tags=d.get("inscription_tags", []),
+            research_notes=d.get("research_notes", ""),
+            research_tags=d.get("research_tags", []),
+            custom_tags=d.get("custom_tags", []),
+            custom_tag_ids=d.get("custom_tag_ids", []),
+            annotated_by=d.get("annotated_by", ""),
+            annotated_at=d.get("annotated_at", ""),
+            updated_at=d.get("updated_at", ""),
+        )
+
+
+@dataclass
+class FragmentCluster:
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    name: str = ""
+    fragment_ids: list = field(default_factory=list)
+    cluster_method: str = ""
+    cluster_params: dict = field(default_factory=dict)
+    representative_fragment_id: str = ""
+    description: str = ""
+    created_by: str = ""
+    created_at: str = ""
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "name": self.name,
+            "fragment_ids": self.fragment_ids,
+            "cluster_method": self.cluster_method,
+            "cluster_params": self.cluster_params,
+            "representative_fragment_id": self.representative_fragment_id,
+            "description": self.description,
+            "created_by": self.created_by,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            id=d.get("id", uuid.uuid4().hex[:8]),
+            name=d.get("name", ""),
+            fragment_ids=d.get("fragment_ids", []),
+            cluster_method=d.get("cluster_method", ""),
+            cluster_params=d.get("cluster_params", {}),
+            representative_fragment_id=d.get("representative_fragment_id", ""),
+            description=d.get("description", ""),
+            created_by=d.get("created_by", ""),
+            created_at=d.get("created_at", ""),
+        )
+
+
+@dataclass
+class SearchResult:
+    fragment_id: str = ""
+    relevance_score: float = 0.0
+    matched_fields: list = field(default_factory=list)
+    matched_tags: list = field(default_factory=list)
+    ownership_status: SchemeOwnershipStatus = SchemeOwnershipStatus.UNASSIGNED
+    associated_scheme_ids: list = field(default_factory=list)
+    locked_scheme_id: str = ""
+
+    def to_dict(self):
+        return {
+            "fragment_id": self.fragment_id,
+            "relevance_score": self.relevance_score,
+            "matched_fields": self.matched_fields,
+            "matched_tags": self.matched_tags,
+            "ownership_status": self.ownership_status.value,
+            "associated_scheme_ids": self.associated_scheme_ids,
+            "locked_scheme_id": self.locked_scheme_id,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            fragment_id=d.get("fragment_id", ""),
+            relevance_score=d.get("relevance_score", 0.0),
+            matched_fields=d.get("matched_fields", []),
+            matched_tags=d.get("matched_tags", []),
+            ownership_status=SchemeOwnershipStatus(d.get("ownership_status", "未归属")),
+            associated_scheme_ids=d.get("associated_scheme_ids", []),
+            locked_scheme_id=d.get("locked_scheme_id", ""),
+        )
+
+
+@dataclass
+class ResearchClue:
+    id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
+    clue_type: str = ""
+    title: str = ""
+    description: str = ""
+    fragment_ids: list = field(default_factory=list)
+    scheme_ids: list = field(default_factory=list)
+    confidence: float = 0.0
+    suggestion: str = ""
+    created_at: str = ""
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "clue_type": self.clue_type,
+            "title": self.title,
+            "description": self.description,
+            "fragment_ids": self.fragment_ids,
+            "scheme_ids": self.scheme_ids,
+            "confidence": self.confidence,
+            "suggestion": self.suggestion,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, d):
+        return cls(
+            id=d.get("id", uuid.uuid4().hex[:8]),
+            clue_type=d.get("clue_type", ""),
+            title=d.get("title", ""),
+            description=d.get("description", ""),
+            fragment_ids=d.get("fragment_ids", []),
+            scheme_ids=d.get("scheme_ids", []),
+            confidence=d.get("confidence", 0.0),
+            suggestion=d.get("suggestion", ""),
+            created_at=d.get("created_at", ""),
         )

@@ -4,7 +4,9 @@ import networkx as nx
 from models import (
     Fragment, EdgeFeature, EdgeMatch, Scheme, EdgeDirection, EdgeType, DefectType,
     ReviewStatus, OperationType, OperationLog, SchemeVersion, SchemeDiff,
-    ImportValidationReport, ImportValidationIssue, ConflictInfo, ConflictType
+    ImportValidationReport, ImportValidationIssue, ConflictInfo, ConflictType,
+    TagCategory, SchemeOwnershipStatus, CustomTag, SemanticAnnotation,
+    FragmentCluster, SearchResult, ResearchClue
 )
 
 
@@ -638,3 +640,532 @@ def filter_operation_logs(logs, op_type=None, target_type=None, target_id=None, 
     if operator:
         filtered = [l for l in filtered if operator in l.operator]
     return filtered[-limit:]
+
+
+def build_default_tags():
+    defaults = []
+    glyph_tags = [
+        ("偏旁部首", ["亻", "氵", "扌", "艹", "木", "口", "日", "月", "土", "火"]),
+        ("结构类型", ["左右结构", "上下结构", "包围结构", "独体字", "半包围"]),
+        ("笔画类型", ["横", "竖", "撇", "捺", "点", "折", "钩"]),
+    ]
+    for group, tags in glyph_tags:
+        for t in tags:
+            defaults.append(CustomTag(name=f"{group}:{t}", category=TagCategory.GLYPH_COMPONENT,
+                                      description=f"字形部件-{group}-{t}", color="#3498DB",
+                                      created_at=now_str(), updated_at=now_str()))
+
+    knife_tags = [
+        "单刀直入", "双刀刻制", "浅刻", "深刻", "冲刀", "切刀", "涩刀", "游刀", "崩口", "毛刺"
+    ]
+    for t in knife_tags:
+        defaults.append(CustomTag(name=t, category=TagCategory.KNIFE_MARK,
+                                  description=f"刀痕形态-{t}", color="#E74C3C",
+                                  created_at=now_str(), updated_at=now_str()))
+
+    weathering_tags = [
+        "自然风化", "水渍侵蚀", "土蚀", "磨损严重", "轻度风化",
+        "裂纹密布", "表面剥落", "钙质沉积", "霉斑", "铁锈污染"
+    ]
+    for t in weathering_tags:
+        defaults.append(CustomTag(name=t, category=TagCategory.WEATHERING,
+                                  description=f"风化特征-{t}", color="#F39C12",
+                                  created_at=now_str(), updated_at=now_str()))
+
+    edge_texture_tags = [
+        "毛边", "齐边", "锯齿边", "不规则断裂", "斜切边",
+        "圆润边", "破损毛边", "刀切边", "自然断裂", "磨蚀边"
+    ]
+    for t in edge_texture_tags:
+        defaults.append(CustomTag(name=t, category=TagCategory.EDGE_TEXTURE,
+                                  description=f"边缘纹理-{t}", color="#2ECC71",
+                                  created_at=now_str(), updated_at=now_str()))
+
+    inscription_tags = [
+        "楷书", "行书", "草书", "隶书", "篆书", "魏碑",
+        "题记", "落款", "印章", "纪年", "人名", "地名", "官职"
+    ]
+    for t in inscription_tags:
+        defaults.append(CustomTag(name=t, category=TagCategory.INSCRIPTION_TAG,
+                                  description=f"题跋标签-{t}", color="#9B59B6",
+                                  created_at=now_str(), updated_at=now_str()))
+
+    research_tags = [
+        "待考释", "重要文献", "版本差异", "待拼接", "已释读",
+        "重复残片", "参考样本", "特殊形制", "需要专家鉴定", "已归档"
+    ]
+    for t in research_tags:
+        defaults.append(CustomTag(name=t, category=TagCategory.RESEARCH_TAG,
+                                  description=f"研究标签-{t}", color="#1ABC9C",
+                                  created_at=now_str(), updated_at=now_str()))
+    return defaults
+
+
+def get_tags_by_category(tags, category):
+    if isinstance(category, TagCategory):
+        return [t for t in tags if t.category == category]
+    return [t for t in tags if t.category.value == category]
+
+
+def get_annotation_for_fragment(annotations, fragment_id):
+    for ann in annotations:
+        if ann.fragment_id == fragment_id:
+            return ann
+    return None
+
+
+def get_fragment_ownership_status(fragment, schemes):
+    if fragment.is_locked and fragment.locked_scheme_id:
+        in_conflict = False
+        for s in schemes:
+            if s.id != fragment.locked_scheme_id and fragment.id in s.get_involved_fragment_ids():
+                in_conflict = True
+                break
+        return SchemeOwnershipStatus.CONFLICTED if in_conflict else SchemeOwnershipStatus.LOCKED
+    involved = [s for s in schemes if fragment.id in s.get_involved_fragment_ids()]
+    if len(involved) > 1:
+        return SchemeOwnershipStatus.CONFLICTED
+    elif len(involved) == 1:
+        return SchemeOwnershipStatus.CANDIDATE
+    return SchemeOwnershipStatus.UNASSIGNED
+
+
+def get_associated_schemes(fragment_id, schemes):
+    return [s for s in schemes if fragment_id in s.get_involved_fragment_ids()]
+
+
+def compute_texture_similarity(frag_a, frag_b):
+    score = 0.0
+    if frag_a.image_data and frag_b.image_data:
+        desc_a = np.array(compute_descriptor_from_image(frag_a.image_data))
+        desc_b = np.array(compute_descriptor_from_image(frag_b.image_data))
+        if desc_a.size > 0 and desc_b.size > 0 and desc_a.shape == desc_b.shape:
+            norm_a = desc_a / (np.linalg.norm(desc_a) + 1e-8)
+            norm_b = desc_b / (np.linalg.norm(desc_b) + 1e-8)
+            score = float(np.dot(norm_a, norm_b))
+    return max(0.0, min(1.0, (score + 1.0) / 2.0))
+
+
+def compute_annotation_similarity(ann_a, ann_b):
+    if not ann_a or not ann_b:
+        return 0.0
+    score = 0.0
+    field_weights = {
+        "glyph_components": 0.20,
+        "knife_marks": 0.15,
+        "weathering_features": 0.15,
+        "edge_textures": 0.15,
+        "inscription_tags": 0.15,
+        "research_tags": 0.10,
+        "custom_tag_ids": 0.10,
+    }
+    for field, weight in field_weights.items():
+        set_a = set(getattr(ann_a, field, []))
+        set_b = set(getattr(ann_b, field, []))
+        if set_a or set_b:
+            intersection = set_a & set_b
+            union = set_a | set_b
+            jaccard = len(intersection) / len(union) if union else 0.0
+            score += jaccard * weight
+    return score
+
+
+def compute_overall_similarity(frag_a, frag_b, ann_a, ann_b):
+    tex_sim = compute_texture_similarity(frag_a, frag_b)
+    ann_sim = compute_annotation_similarity(ann_a, ann_b)
+    edge_sim = 0.0
+    if frag_a.edges and frag_b.edges:
+        sims = []
+        for ea in frag_a.edges:
+            for eb in frag_b.edges:
+                sims.append(compute_edge_similarity(ea, eb))
+        if sims:
+            edge_sim = max(sims)
+    overall = tex_sim * 0.35 + ann_sim * 0.40 + edge_sim * 0.25
+    return overall, {"texture": tex_sim, "annotation": ann_sim, "edge": edge_sim}
+
+
+def search_fragments(
+    fragments, annotations, schemes, tags,
+    fragment_id_keyword=None,
+    inscription_keyword=None,
+    research_keyword=None,
+    selected_tag_ids=None,
+    edge_direction=None,
+    edge_type=None,
+    defect_type=None,
+    ownership_status=None,
+    texture_ref_frag_id=None,
+    texture_similarity_min=0.0,
+    sort_by="relevance",
+):
+    results = []
+    selected_tag_ids = selected_tag_ids or []
+
+    for frag in fragments:
+        score = 0.0
+        matched_fields = []
+        matched_tags = []
+
+        if fragment_id_keyword and fragment_id_keyword.strip():
+            kw = fragment_id_keyword.strip().lower()
+            if kw in frag.id.lower():
+                score += 0.30
+                matched_fields.append("残片编号")
+            else:
+                continue
+
+        ann = get_annotation_for_fragment(annotations, frag.id)
+
+        if inscription_keyword and inscription_keyword.strip():
+            kw = inscription_keyword.strip().lower()
+            in_inscriptions = frag.inscriptions and kw in frag.inscriptions.lower()
+            in_ann = ann and ann.inscription_content and kw in ann.inscription_content.lower()
+            if in_inscriptions or in_ann:
+                score += 0.25
+                matched_fields.append("题跋内容")
+            else:
+                continue
+
+        if research_keyword and research_keyword.strip():
+            kw = research_keyword.strip().lower()
+            in_notes = frag.notes and kw in frag.notes.lower()
+            in_ann = ann and ann.research_notes and kw in ann.research_notes.lower()
+            if in_notes or in_ann:
+                score += 0.20
+                matched_fields.append("研究备注")
+            else:
+                continue
+
+        if selected_tag_ids:
+            if ann:
+                ann_tags = ann.get_all_tag_ids()
+                matched = ann_tags & set(selected_tag_ids)
+                if matched:
+                    matched_tags = list(matched)
+                    score += 0.15 * len(matched) / len(selected_tag_ids)
+                    matched_fields.append("标签匹配")
+                else:
+                    continue
+            else:
+                continue
+
+        edge_match = True
+        if edge_direction or edge_type or defect_type:
+            edge_match = False
+            for e in frag.edges:
+                d_ok = (edge_direction is None) or (e.direction == edge_direction)
+                t_ok = (edge_type is None) or (e.edge_type == edge_type)
+                def_ok = (defect_type is None) or (e.defect_type == defect_type)
+                if d_ok and t_ok and def_ok:
+                    edge_match = True
+                    matched_fields.append("边缘特征")
+                    break
+            if not edge_match:
+                continue
+
+        frag_status = get_fragment_ownership_status(frag, schemes)
+        if ownership_status:
+            if isinstance(ownership_status, list):
+                if frag_status not in ownership_status:
+                    continue
+            elif frag_status != ownership_status:
+                continue
+
+        if texture_ref_frag_id:
+            ref_frag = next((f for f in fragments if f.id == texture_ref_frag_id), None)
+            if ref_frag and ref_frag.id != frag.id:
+                tex_sim = compute_texture_similarity(ref_frag, frag)
+                if tex_sim >= texture_similarity_min:
+                    score += tex_sim * 0.40
+                    matched_fields.append(f"纹理相似({tex_sim:.2f})")
+                else:
+                    continue
+            elif ref_frag and ref_frag.id == frag.id:
+                pass
+
+        associated_schemes = get_associated_schemes(frag.id, schemes)
+        results.append(SearchResult(
+            fragment_id=frag.id,
+            relevance_score=score,
+            matched_fields=matched_fields,
+            matched_tags=matched_tags,
+            ownership_status=frag_status,
+            associated_scheme_ids=[s.id for s in associated_schemes],
+            locked_scheme_id=frag.locked_scheme_id or "",
+        ))
+
+    if sort_by == "relevance":
+        results.sort(key=lambda r: r.relevance_score, reverse=True)
+    elif sort_by == "fragment_id":
+        results.sort(key=lambda r: r.fragment_id)
+    elif sort_by == "ownership":
+        order = {
+            SchemeOwnershipStatus.LOCKED: 0,
+            SchemeOwnershipStatus.CANDIDATE: 1,
+            SchemeOwnershipStatus.CONFLICTED: 2,
+            SchemeOwnershipStatus.UNASSIGNED: 3,
+        }
+        results.sort(key=lambda r: order.get(r.ownership_status, 99))
+
+    return results
+
+
+def cluster_fragments(fragments, annotations, method="tag_based", n_clusters=3):
+    clusters = []
+    if not fragments:
+        return clusters
+
+    if method == "tag_based":
+        frag_tags = {}
+        for frag in fragments:
+            ann = get_annotation_for_fragment(annotations, frag.id)
+            if ann:
+                frag_tags[frag.id] = ann.get_all_tag_ids()
+            else:
+                frag_tags[frag.id] = set()
+
+        unassigned = set(f.id for f in fragments)
+        cluster_id = 0
+        while unassigned:
+            seed_id = None
+            max_tags = -1
+            for fid in unassigned:
+                if len(frag_tags[fid]) > max_tags:
+                    max_tags = len(frag_tags[fid])
+                    seed_id = fid
+                    break
+            if seed_id is None:
+                seed_id = next(iter(unassigned))
+
+            seed_tags = frag_tags[seed_id]
+            cluster_members = {seed_id}
+            unassigned.remove(seed_id)
+
+            for fid in list(unassigned):
+                f_tags = frag_tags[fid]
+                if seed_tags and f_tags:
+                    sim = len(seed_tags & f_tags) / max(len(seed_tags | f_tags), 1)
+                    if sim >= 0.3:
+                        cluster_members.add(fid)
+                        unassigned.remove(fid)
+                elif not seed_tags and not f_tags:
+                    cluster_members.add(fid)
+                    unassigned.remove(fid)
+
+            cluster_id += 1
+            clusters.append(FragmentCluster(
+                name=f"标签聚类组-{cluster_id}",
+                fragment_ids=list(cluster_members),
+                cluster_method="tag_based",
+                cluster_params={"threshold": 0.3},
+                representative_fragment_id=seed_id,
+                description=f"基于标签相似度聚类，核心残片 {seed_id}",
+                created_at=now_str(),
+            ))
+
+    elif method == "texture_based":
+        sim_matrix = {}
+        frag_ids = [f.id for f in fragments]
+        frag_map = {f.id: f for f in fragments}
+        for i, fa in enumerate(fragments):
+            for j, fb in enumerate(fragments):
+                if i < j:
+                    sim = compute_texture_similarity(fa, fb)
+                    sim_matrix[(fa.id, fb.id)] = sim
+                    sim_matrix[(fb.id, fa.id)] = sim
+
+        unassigned = set(frag_ids)
+        cluster_id = 0
+        while unassigned:
+            seed_id = next(iter(unassigned))
+            cluster_members = {seed_id}
+            unassigned.remove(seed_id)
+            for fid in list(unassigned):
+                sim = sim_matrix.get((seed_id, fid), 0.0)
+                if sim >= 0.6:
+                    cluster_members.add(fid)
+                    unassigned.remove(fid)
+            cluster_id += 1
+            clusters.append(FragmentCluster(
+                name=f"纹理聚类组-{cluster_id}",
+                fragment_ids=list(cluster_members),
+                cluster_method="texture_based",
+                cluster_params={"threshold": 0.6},
+                representative_fragment_id=seed_id,
+                description=f"基于纹理特征相似度聚类，核心残片 {seed_id}",
+                created_at=now_str(),
+            ))
+
+    elif method == "ownership_based":
+        groups = {}
+        for frag in fragments:
+            status = get_fragment_ownership_status(frag, [])
+            key = status.value
+            if frag.locked_scheme_id:
+                key = f"LOCKED:{frag.locked_scheme_id}"
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(frag.id)
+        cluster_id = 0
+        for key, members in groups.items():
+            cluster_id += 1
+            clusters.append(FragmentCluster(
+                name=f"归属组-{key}",
+                fragment_ids=members,
+                cluster_method="ownership_based",
+                cluster_params={"group_key": key},
+                representative_fragment_id=members[0] if members else "",
+                description=f"按归属状态分组: {key}",
+                created_at=now_str(),
+            ))
+
+    return clusters
+
+
+def find_similar_fragments(target_frag, fragments, annotations, top_k=5):
+    results = []
+    target_ann = get_annotation_for_fragment(annotations, target_frag.id)
+    for frag in fragments:
+        if frag.id == target_frag.id:
+            continue
+        ann = get_annotation_for_fragment(annotations, frag.id)
+        overall, components = compute_overall_similarity(target_frag, frag, target_ann, ann)
+        results.append({
+            "fragment_id": frag.id,
+            "similarity": overall,
+            "components": components,
+        })
+    results.sort(key=lambda x: x["similarity"], reverse=True)
+    return results[:top_k]
+
+
+def discover_research_clues(fragments, annotations, schemes, matches):
+    clues = []
+
+    tag_groups = {}
+    for frag in fragments:
+        ann = get_annotation_for_fragment(annotations, frag.id)
+        if ann:
+            for tid in ann.glyph_components:
+                if tid not in tag_groups:
+                    tag_groups[tid] = []
+                tag_groups[tid].append(frag.id)
+
+    for tag_id, frag_ids in tag_groups.items():
+        if len(frag_ids) >= 3:
+            clues.append(ResearchClue(
+                clue_type="同字形部件",
+                title=f"字形部件关联组: {tag_id}",
+                description=f"发现 {len(frag_ids)} 个残片具有相同字形部件 '{tag_id}'，可能属于同一组文字",
+                fragment_ids=frag_ids,
+                confidence=min(0.9, 0.5 + 0.05 * len(frag_ids)),
+                suggestion="建议比对这些残片的文字位置关系，尝试拼接成完整文字",
+                created_at=now_str(),
+            ))
+
+    for scheme in schemes:
+        for other in schemes:
+            if scheme.id >= other.id:
+                continue
+            s_frags = scheme.get_involved_fragment_ids()
+            o_frags = other.get_involved_fragment_ids()
+            overlap = s_frags & o_frags
+            if overlap:
+                clues.append(ResearchClue(
+                    clue_type="方案交叉",
+                    title=f"方案交叉重叠: {scheme.name} ↔ {other.name}",
+                    description=f"方案 '{scheme.name}' 与 '{other.name}' 共享残片 {list(overlap)}，存在潜在归属冲突",
+                    fragment_ids=list(overlap),
+                    scheme_ids=[scheme.id, other.id],
+                    confidence=0.85,
+                    suggestion="建议审核两个方案的匹配关系，确认残片的正确归属",
+                    created_at=now_str(),
+                ))
+
+    for frag in fragments:
+        ann = get_annotation_for_fragment(annotations, frag.id)
+        if ann and ann.inscription_content and not frag.is_locked:
+            for other in fragments:
+                if other.id == frag.id:
+                    continue
+                other_ann = get_annotation_for_fragment(annotations, other.id)
+                if other_ann and other_ann.inscription_content:
+                    words_a = set(ann.inscription_content)
+                    words_b = set(other_ann.inscription_content)
+                    common = words_a & words_b
+                    if len(common) >= 3:
+                        clues.append(ResearchClue(
+                            clue_type="题跋关联",
+                            title=f"题跋内容关联: {frag.id} ↔ {other.id}",
+                            description=f"两个残片的题跋共享文字 '{''.join(common)}'，可能为同一段文字",
+                            fragment_ids=[frag.id, other.id],
+                            confidence=0.75,
+                            suggestion="建议详细比对题跋内容，确认是否为连续文本",
+                            created_at=now_str(),
+                        ))
+                        break
+
+    for scheme in schemes:
+        locked = [fid for fid in scheme.get_involved_fragment_ids()
+                  if next((f for f in fragments if f.id == fid), None) and not next(f for f in fragments if f.id == fid).is_locked]
+        if len(locked) < len(scheme.get_involved_fragment_ids()) * 0.5 and len(scheme.matches) >= 2:
+            clues.append(ResearchClue(
+                clue_type="待锁定方案",
+                title=f"方案建议锁定: {scheme.name}",
+                description=f"方案 '{scheme.name}' 包含 {len(scheme.matches)} 个匹配关系，但锁定率较低，建议确认后锁定",
+                scheme_ids=[scheme.id],
+                fragment_ids=list(scheme.get_involved_fragment_ids()),
+                confidence=0.6,
+                suggestion="审核方案匹配关系，确认无误后锁定方案以避免冲突",
+                created_at=now_str(),
+            ))
+
+    unannotated = [f.id for f in fragments if not get_annotation_for_fragment(annotations, f.id)]
+    if unannotated:
+        clues.append(ResearchClue(
+            clue_type="待标注",
+            title=f"待语义标注残片 ({len(unannotated)} 个)",
+            description=f"发现 {len(unannotated)} 个残片尚未进行语义标注，建议补全以增强检索效果",
+            fragment_ids=unannotated,
+            confidence=0.95,
+            suggestion="为未标注残片添加字形部件、刀痕、风化等维度的语义标注",
+            created_at=now_str(),
+        ))
+
+    clues.sort(key=lambda c: c.confidence, reverse=True)
+    return clues
+
+
+def build_tag_color_map(tags):
+    return {t.id: t.color for t in tags}
+
+
+def get_tag_name_by_id(tags, tag_id):
+    for t in tags:
+        if t.id == tag_id:
+            return t.name
+    return tag_id
+
+
+def get_tag_category_name(tag_id, tags, annotations, fragment_id):
+    ann = get_annotation_for_fragment(annotations, fragment_id)
+    if not ann:
+        return "未分类"
+    if tag_id in ann.glyph_components:
+        return TagCategory.GLYPH_COMPONENT.value
+    if tag_id in ann.knife_marks:
+        return TagCategory.KNIFE_MARK.value
+    if tag_id in ann.weathering_features:
+        return TagCategory.WEATHERING.value
+    if tag_id in ann.edge_textures:
+        return TagCategory.EDGE_TEXTURE.value
+    if tag_id in ann.inscription_tags:
+        return TagCategory.INSCRIPTION_TAG.value
+    if tag_id in ann.research_tags:
+        return TagCategory.RESEARCH_TAG.value
+    if tag_id in ann.custom_tag_ids:
+        for t in tags:
+            if t.id == tag_id:
+                return t.category.value
+    return TagCategory.CUSTOM.value
