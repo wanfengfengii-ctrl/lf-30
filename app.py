@@ -16,7 +16,11 @@ from models import (
     ReviewStatus, OperationType, OperationLog, SchemeVersion, SchemeDiff,
     ImportValidationReport, ImportValidationIssue, ConflictInfo, ConflictType,
     TagCategory, SchemeOwnershipStatus, CustomTag, SemanticAnnotation,
-    FragmentCluster, SearchResult, ResearchClue
+    FragmentCluster, SearchResult, ResearchClue,
+    TagRelation, TagRelationType, EvidenceItem, EvidenceType, EvidenceChain,
+    ResearchConclusion, ConclusionStatus, ConclusionVersion,
+    ReviewRecord, ReviewDecision, KnowledgeGraph, KGNode, KGEdge,
+    KGNodeType, KGEdgeType, InferencePath, SchemeDeepCompareResult, SchemeCompareDepth,
 )
 from utils import (
     validate_image,
@@ -58,6 +62,30 @@ from utils import (
     build_tag_color_map,
     get_tag_name_by_id,
     get_tag_category_name,
+    add_tag_relation,
+    get_tag_relations,
+    find_related_tags,
+    create_evidence,
+    get_evidence_for_fragment,
+    get_evidence_for_scheme,
+    create_evidence_chain,
+    add_evidence_to_chain,
+    compute_evidence_chain_strength,
+    create_conclusion,
+    update_conclusion,
+    create_review_record,
+    add_review_to_conclusion,
+    get_conclusions_for_fragment,
+    get_conclusions_for_scheme,
+    get_review_records_for_target,
+    build_knowledge_graph,
+    build_knowledge_graph_nx,
+    find_inference_paths,
+    find_relation_path_between_fragments,
+    get_node_type_color,
+    deep_compare_schemes,
+    generate_auto_evidence,
+    get_conclusion_statistics,
 )
 
 
@@ -88,6 +116,20 @@ def init_session_state():
         st.session_state.research_clues = []
     if "search_results" not in st.session_state:
         st.session_state.search_results = None
+    if "tag_relations" not in st.session_state:
+        st.session_state.tag_relations = []
+    if "evidences" not in st.session_state:
+        st.session_state.evidences = []
+    if "evidence_chains" not in st.session_state:
+        st.session_state.evidence_chains = []
+    if "conclusions" not in st.session_state:
+        st.session_state.conclusions = []
+    if "review_records" not in st.session_state:
+        st.session_state.review_records = []
+    if "knowledge_graph" not in st.session_state:
+        st.session_state.knowledge_graph = None
+    if "deep_compare_result" not in st.session_state:
+        st.session_state.deep_compare_result = None
 
 
 def add_log(op_type, target_type, target_id, description, details=None):
@@ -915,12 +957,17 @@ def page_import_export():
             "semantic_annotations": [a.to_dict() for a in st.session_state.semantic_annotations],
             "fragment_clusters": [c.to_dict() for c in st.session_state.fragment_clusters],
             "research_clues": [c.to_dict() for c in st.session_state.research_clues],
+            "tag_relations": [r.to_dict() for r in st.session_state.tag_relations],
+            "evidences": [e.to_dict() for e in st.session_state.evidences],
+            "evidence_chains": [c.to_dict() for c in st.session_state.evidence_chains],
+            "conclusions": [c.to_dict() for c in st.session_state.conclusions],
             "exported_at": now_str(),
             "exported_by": st.session_state.current_operator,
+            "version": "4.0",
         }
         json_str = json.dumps(export, ensure_ascii=False, indent=2)
         st.download_button(
-            "📦 导出当前所有残片、方案、标签、标注与日志",
+            "📦 导出当前所有数据",
             data=json_str,
             file_name="rubbing_analysis_full.json",
             mime="application/json",
@@ -930,7 +977,10 @@ def page_import_export():
             f"当前包含 {len(st.session_state.fragments)} 个残片, "
             f"{len(st.session_state.schemes)} 个方案, "
             f"{len(st.session_state.custom_tags)} 个标签, "
-            f"{len(st.session_state.semantic_annotations)} 条标注, "
+            f"{len(st.session_state.tag_relations)} 条标签关系, "
+            f"{len(st.session_state.evidences)} 条证据, "
+            f"{len(st.session_state.evidence_chains)} 条证据链, "
+            f"{len(st.session_state.conclusions)} 条研究结论, "
             f"{len(st.session_state.operation_logs)} 条操作日志"
         )
 
@@ -995,6 +1045,10 @@ def page_import_export():
                             new_annotations = []
                             new_clusters = []
                             new_clues = []
+                            new_tag_relations = []
+                            new_evidences = []
+                            new_evidence_chains = []
+                            new_conclusions = []
                             if "operation_logs" in data:
                                 new_logs = [OperationLog.from_dict(l) for l in data["operation_logs"]]
                             if "custom_tags" in data:
@@ -1005,6 +1059,14 @@ def page_import_export():
                                 new_clusters = [FragmentCluster.from_dict(c) for c in data["fragment_clusters"]]
                             if "research_clues" in data:
                                 new_clues = [ResearchClue.from_dict(c) for c in data["research_clues"]]
+                            if "tag_relations" in data:
+                                new_tag_relations = [TagRelation.from_dict(r) for r in data["tag_relations"]]
+                            if "evidences" in data:
+                                new_evidences = [EvidenceItem.from_dict(e) for e in data["evidences"]]
+                            if "evidence_chains" in data:
+                                new_evidence_chains = [EvidenceChain.from_dict(c) for c in data["evidence_chains"]]
+                            if "conclusions" in data:
+                                new_conclusions = [ResearchConclusion.from_dict(c) for c in data["conclusions"]]
 
                             st.session_state.fragments.extend(new_fragments)
                             st.session_state.schemes.extend(new_schemes)
@@ -1017,14 +1079,27 @@ def page_import_export():
                                 st.session_state.fragment_clusters.extend(new_clusters)
                             if new_clues:
                                 st.session_state.research_clues.extend(new_clues)
+                            if new_tag_relations:
+                                st.session_state.tag_relations.extend(new_tag_relations)
+                            if new_evidences:
+                                st.session_state.evidences.extend(new_evidences)
+                            if new_evidence_chains:
+                                st.session_state.evidence_chains.extend(new_evidence_chains)
+                            if new_conclusions:
+                                st.session_state.conclusions.extend(new_conclusions)
 
                             add_log(OperationType.DATA_IMPORT, "data", "import_all",
                                     f"导入 {len(new_fragments)} 个残片, {len(new_schemes)} 个方案, "
-                                    f"{len(new_tags)} 个标签, {len(new_annotations)} 条标注, {len(new_logs)} 条日志",
+                                    f"{len(new_tags)} 个标签, {len(new_annotations)} 条标注, "
+                                    f"{len(new_tag_relations)} 条标签关系, {len(new_evidences)} 条证据, "
+                                    f"{len(new_conclusions)} 条研究结论, {len(new_logs)} 条日志",
                                     {"fragment_count": len(new_fragments),
                                      "scheme_count": len(new_schemes),
                                      "tag_count": len(new_tags),
                                      "annotation_count": len(new_annotations),
+                                     "tag_relation_count": len(new_tag_relations),
+                                     "evidence_count": len(new_evidences),
+                                     "conclusion_count": len(new_conclusions),
                                      "log_count": len(new_logs)})
 
                             st.session_state.import_report = None
@@ -1034,6 +1109,12 @@ def page_import_export():
                                 msg += f", {len(new_tags)} 个标签"
                             if new_annotations:
                                 msg += f", {len(new_annotations)} 条标注"
+                            if new_tag_relations:
+                                msg += f", {len(new_tag_relations)} 条标签关系"
+                            if new_evidences:
+                                msg += f", {len(new_evidences)} 条证据"
+                            if new_conclusions:
+                                msg += f", {len(new_conclusions)} 条结论"
                             st.success(msg)
                     else:
                         st.info("请修正数据后重新导入，或选择仅导入有效部分")
@@ -1928,22 +2009,978 @@ def page_analysis_visualization():
             plt.close(fig)
 
 
+def get_conclusion_status_color(status):
+    if status == ConclusionStatus.ACCEPTED:
+        return "#2ECC71"
+    elif status == ConclusionStatus.REJECTED:
+        return "#E74C3C"
+    elif status == ConclusionStatus.CONTROVERSIAL:
+        return "#F39C12"
+    elif status == ConclusionStatus.REVISED:
+        return "#3498DB"
+    elif status == ConclusionStatus.REVIEWING:
+        return "#9B59B6"
+    elif status == ConclusionStatus.PENDING_REVIEW:
+        return "#1ABC9C"
+    elif status == ConclusionStatus.EVIDENCE_BUILDING:
+        return "#E67E22"
+    else:
+        return "#95A5A6"
+
+
+def get_conclusion_status_emoji(status):
+    if status == ConclusionStatus.ACCEPTED:
+        return "✅"
+    elif status == ConclusionStatus.REJECTED:
+        return "❌"
+    elif status == ConclusionStatus.CONTROVERSIAL:
+        return "⚖️"
+    elif status == ConclusionStatus.REVISED:
+        return "✏️"
+    elif status == ConclusionStatus.REVIEWING:
+        return "🔍"
+    elif status == ConclusionStatus.PENDING_REVIEW:
+        return "⏳"
+    elif status == ConclusionStatus.EVIDENCE_BUILDING:
+        return "📦"
+    else:
+        return "💡"
+
+
+def page_tag_relations():
+    st.header("🔗 标签关系建模")
+
+    with st.expander("➕ 创建标签关系", expanded=True):
+        col1, col2, col3 = st.columns([2, 2, 2])
+        with col1:
+            tag_options = {t.id: t.name for t in st.session_state.custom_tags}
+            source_tag_id = st.selectbox(
+                "源标签",
+                options=list(tag_options.keys()),
+                format_func=lambda tid: tag_options.get(tid, tid),
+                key="rel_source_tag"
+            )
+        with col2:
+            relation_type = st.selectbox(
+                "关系类型",
+                [r.value for r in TagRelationType],
+                key="rel_type"
+            )
+        with col3:
+            available_targets = [tid for tid in tag_options.keys() if tid != source_tag_id]
+            target_tag_id = st.selectbox(
+                "目标标签",
+                options=available_targets,
+                format_func=lambda tid: tag_options.get(tid, tid),
+                key="rel_target_tag"
+            )
+
+        col4, col5 = st.columns([3, 1])
+        with col4:
+            rel_description = st.text_input("关系描述 (可选)", key="rel_desc")
+        with col5:
+            rel_confidence = st.slider("置信度", 0.0, 1.0, 1.0, 0.05, key="rel_conf")
+
+        if st.button("创建关系", key="create_relation_btn"):
+            rel_obj = TagRelationType(relation_type)
+            relation, created = add_tag_relation(
+                st.session_state.tag_relations,
+                source_tag_id,
+                target_tag_id,
+                rel_obj,
+                confidence=rel_confidence,
+                description=rel_description,
+                created_by=st.session_state.current_operator,
+            )
+            if created:
+                add_log(OperationType.TAG_ADD, "tag_relation", relation.id,
+                        f"创建标签关系: {tag_options[source_tag_id]} → {tag_options[target_tag_id]} ({relation_type})")
+                st.success(f"标签关系创建成功")
+            else:
+                st.warning("该标签关系已存在")
+
+    st.divider()
+    st.subheader("标签关系网络")
+
+    if not st.session_state.tag_relations:
+        st.info("暂无标签关系，请先创建")
+    else:
+        st.info(f"共 {len(st.session_state.tag_relations)} 条标签关系")
+
+        filter_tag = st.selectbox(
+            "按标签筛选",
+            ["全部"] + list(tag_options.keys()),
+            format_func=lambda x: tag_options.get(x, x) if x != "全部" else "全部",
+            key="rel_filter_tag"
+        )
+
+        display_relations = st.session_state.tag_relations
+        if filter_tag != "全部":
+            display_relations = get_tag_relations(display_relations, tag_id=filter_tag)
+
+        for rel in display_relations:
+            src_name = tag_options.get(rel.source_tag_id, rel.source_tag_id)
+            tgt_name = tag_options.get(rel.target_tag_id, rel.target_tag_id)
+
+            with st.container():
+                col_src, col_arrow, col_tgt, col_conf, col_act = st.columns([2, 2, 2, 1, 1])
+                with col_src:
+                    st.markdown(f"**{src_name}**")
+                with col_arrow:
+                    st.markdown(f"<div style='text-align:center;'>"
+                                f"【{rel.relation_type.value}】"
+                                f"</div>", unsafe_allow_html=True)
+                with col_tgt:
+                    st.markdown(f"**{tgt_name}**")
+                with col_conf:
+                    st.metric("置信度", f"{int(rel.confidence*100)}%")
+                with col_act:
+                    if st.button("🗑️", key=f"del_rel_{rel.id}"):
+                        st.session_state.tag_relations = [
+                            r for r in st.session_state.tag_relations if r.id != rel.id
+                        ]
+                        st.rerun()
+
+                if rel.description:
+                    st.caption(f"描述: {rel.description}")
+                if rel.created_at:
+                    st.caption(f"创建时间: {rel.created_at} | 创建人: {rel.created_by}")
+                st.divider()
+
+        st.subheader("相关标签发现")
+        explore_tag = st.selectbox(
+            "选择标签探索相关标签",
+            list(tag_options.keys()),
+            format_func=lambda tid: tag_options.get(tid, tid),
+            key="explore_tag"
+        )
+        max_depth = st.slider("最大深度", 1, 5, 2, key="explore_depth")
+        if st.button("🔍 探索相关标签", key="explore_related_btn"):
+            related = find_related_tags(
+                st.session_state.tag_relations, explore_tag, max_depth=max_depth
+            )
+            if related:
+                st.success(f"发现 {len(related)} 个相关标签")
+                for item in related:
+                    tname = tag_options.get(item["tag_id"], item["tag_id"])
+                    st.markdown(
+                        f"- **{tname}** | 关系: {item['relation_type'].value} | "
+                        f"深度: {item['depth']} | 置信度: {int(item['confidence']*100)}%"
+                    )
+            else:
+                st.info("未发现相关标签")
+
+
+def page_evidence_management():
+    st.header("📦 证据链管理")
+
+    tab_evidence, tab_chains = st.tabs(["📝 证据条目", "🔗 证据链"])
+
+    with tab_evidence:
+        with st.expander("➕ 创建新证据", expanded=True):
+            ev_title = st.text_input("证据标题", key="new_ev_title")
+            ev_type = st.selectbox(
+                "证据类型",
+                [t.value for t in EvidenceType],
+                key="new_ev_type"
+            )
+            ev_desc = st.text_area("证据描述", key="new_ev_desc", height=80)
+            ev_conf = st.slider("置信度", 0.0, 1.0, 0.8, 0.05, key="new_ev_conf")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                ev_frags = st.multiselect(
+                    "关联残片",
+                    [f.id for f in st.session_state.fragments],
+                    key="new_ev_frags"
+                )
+            with col2:
+                ev_schemes = st.multiselect(
+                    "关联方案",
+                    [s.id for s in st.session_state.schemes],
+                    format_func=lambda sid: next((s.name for s in st.session_state.schemes if s.id == sid), sid),
+                    key="new_ev_schemes"
+                )
+
+            if st.button("创建证据", key="create_evidence_btn"):
+                if not ev_title.strip():
+                    st.error("证据标题不能为空")
+                else:
+                    evidence = create_evidence(
+                        title=ev_title.strip(),
+                        evidence_type=EvidenceType(ev_type),
+                        description=ev_desc.strip(),
+                        fragment_ids=ev_frags,
+                        scheme_ids=ev_schemes,
+                        confidence=ev_conf,
+                        created_by=st.session_state.current_operator,
+                    )
+                    st.session_state.evidences.append(evidence)
+                    add_log(OperationType.ANNOTATION_ADD, "evidence", evidence.id,
+                            f"创建证据 '{evidence.title}' ({ev_type})")
+                    st.success(f"证据 '{evidence.title}' 创建成功")
+
+        st.divider()
+        st.subheader("自动生成证据")
+        if st.button("🤖 从现有数据生成证据", key="gen_auto_ev_btn"):
+            auto_evs = generate_auto_evidence(
+                st.session_state.fragments,
+                st.session_state.semantic_annotations,
+                st.session_state.schemes,
+                st.session_state.candidate_matches,
+                st.session_state.current_operator,
+            )
+            existing_ids = {e.id for e in st.session_state.evidences}
+            new_count = 0
+            for ev in auto_evs:
+                ev.id = f"auto_{ev.id}"
+                if ev.id not in existing_ids:
+                    st.session_state.evidences.append(ev)
+                    new_count += 1
+            if new_count > 0:
+                st.success(f"自动生成 {new_count} 条证据")
+            else:
+                st.info("没有新的证据可生成")
+
+        st.divider()
+        st.subheader(f"证据列表 ({len(st.session_state.evidences)})")
+
+        if not st.session_state.evidences:
+            st.info("暂无证据")
+        else:
+            ev_type_filter = st.selectbox(
+                "按类型筛选",
+                ["全部"] + [t.value for t in EvidenceType],
+                key="ev_type_filter"
+            )
+            display_evs = st.session_state.evidences
+            if ev_type_filter != "全部":
+                display_evs = [e for e in display_evs if e.evidence_type.value == ev_type_filter]
+
+            for ev in display_evs:
+                with st.container():
+                    col_icon, col_info, col_conf, col_act = st.columns([1, 4, 1, 1])
+                    with col_icon:
+                        st.markdown("### 📄")
+                    with col_info:
+                        st.markdown(f"**{ev.title}**")
+                        st.caption(f"类型: {ev.evidence_type.value}")
+                        if ev.description:
+                            st.caption(f"描述: {ev.description[:80]}...")
+                        if ev.fragment_ids:
+                            st.caption(f"涉及残片: {', '.join(ev.fragment_ids[:3])}{'...' if len(ev.fragment_ids) > 3 else ''}")
+                        if ev.created_at:
+                            st.caption(f"创建: {ev.created_at} | {ev.created_by}")
+                    with col_conf:
+                        st.metric("置信度", f"{int(ev.confidence*100)}%")
+                    with col_act:
+                        if st.button("🗑️", key=f"del_ev_{ev.id}"):
+                            st.session_state.evidences = [
+                                e for e in st.session_state.evidences if e.id != ev.id
+                            ]
+                            st.rerun()
+                    st.divider()
+
+    with tab_chains:
+        with st.expander("➕ 创建证据链", expanded=True):
+            chain_title = st.text_input("证据链名称", key="new_chain_title")
+            chain_desc = st.text_input("证据链描述", key="new_chain_desc")
+            available_ev_ids = [e.id for e in st.session_state.evidences]
+            chain_ev_ids = st.multiselect(
+                "选择证据条目",
+                available_ev_ids,
+                format_func=lambda eid: next((e.title for e in st.session_state.evidences if e.id == eid), eid),
+                key="new_chain_evs"
+            )
+
+            if st.button("创建证据链", key="create_chain_btn"):
+                if not chain_title.strip():
+                    st.error("证据链名称不能为空")
+                else:
+                    chain = create_evidence_chain(
+                        title=chain_title.strip(),
+                        description=chain_desc.strip(),
+                        evidence_ids=chain_ev_ids,
+                        created_by=st.session_state.current_operator,
+                    )
+                    st.session_state.evidence_chains.append(chain)
+                    add_log(OperationType.ANNOTATION_ADD, "evidence_chain", chain.id,
+                            f"创建证据链 '{chain.title}'，包含 {len(chain_ev_ids)} 条证据")
+                    st.success(f"证据链 '{chain.title}' 创建成功")
+
+        st.divider()
+        st.subheader(f"证据链列表 ({len(st.session_state.evidence_chains)})")
+
+        if not st.session_state.evidence_chains:
+            st.info("暂无证据链")
+        else:
+            for chain in st.session_state.evidence_chains:
+                strength = compute_evidence_chain_strength(chain, st.session_state.evidences)
+                with st.expander(f"🔗 {chain.title} (强度: {int(strength*100)}%)", expanded=False):
+                    st.markdown(f"**描述:** {chain.description or '(无)'}")
+                    st.markdown(f"**证据数量:** {len(chain.evidence_ids)}")
+                    st.progress(strength)
+
+                    st.markdown("**证据条目:**")
+                    for i, eid in enumerate(chain.evidence_ids):
+                        ev = next((e for e in st.session_state.evidences if e.id == eid), None)
+                        if ev:
+                            st.markdown(f"{i+1}. 📄 {ev.title} (置信度: {int(ev.confidence*100)}%)")
+                        else:
+                            st.markdown(f"{i+1}. ❓ (证据已删除)")
+
+                    if chain.created_at:
+                        st.caption(f"创建: {chain.created_at} | {chain.created_by}")
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("添加证据", key=f"add_ev_to_chain_{chain.id}"):
+                            st.session_state[f"add_ev_to_chain_{chain.id}_show"] = True
+                    with col2:
+                        if st.button("🗑️ 删除链", key=f"del_chain_{chain.id}"):
+                            st.session_state.evidence_chains = [
+                                c for c in st.session_state.evidence_chains if c.id != chain.id
+                            ]
+                            st.rerun()
+
+                    if st.session_state.get(f"add_ev_to_chain_{chain.id}_show", False):
+                        add_ev_select = st.selectbox(
+                            "选择要添加的证据",
+                            [e.id for e in st.session_state.evidences if e.id not in chain.evidence_ids],
+                            format_func=lambda eid: next((e.title for e in st.session_state.evidences if e.id == eid), eid),
+                            key=f"add_ev_select_{chain.id}"
+                        )
+                        if st.button("确认添加", key=f"confirm_add_ev_{chain.id}"):
+                            add_evidence_to_chain(chain, add_ev_select)
+                            chain.updated_at = now_str()
+                            st.success("证据已添加到链中")
+                            st.rerun()
+
+
+def page_research_conclusions():
+    st.header("📝 研究结论与协同审核")
+
+    tab_list, tab_create = st.tabs(["📋 结论列表", "➕ 新建结论"])
+
+    with tab_create:
+        st.subheader("创建新研究结论")
+
+        conc_title = st.text_input("结论标题", key="new_conc_title")
+        conc_type = st.selectbox(
+            "结论类型",
+            ["文字释读", "拼接方案", "年代考证", "作者考证", "形制分析", "其他"],
+            key="new_conc_type"
+        )
+        conc_content = st.text_area(
+            "结论内容",
+            height=150,
+            key="new_conc_content",
+            placeholder="详细描述研究结论、论证过程、依据等..."
+        )
+        conc_conf = st.slider("置信度", 0.0, 1.0, 0.5, 0.05, key="new_conc_conf")
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            conc_frags = st.multiselect(
+                "关联残片",
+                [f.id for f in st.session_state.fragments],
+                key="new_conc_frags"
+            )
+        with col2:
+            conc_schemes = st.multiselect(
+                "关联方案",
+                [s.id for s in st.session_state.schemes],
+                format_func=lambda sid: next((s.name for s in st.session_state.schemes if s.id == sid), sid),
+                key="new_conc_schemes"
+            )
+        with col3:
+            conc_chains = st.multiselect(
+                "关联证据链",
+                [c.id for c in st.session_state.evidence_chains],
+                format_func=lambda cid: next((c.title for c in st.session_state.evidence_chains if c.id == cid), cid),
+                key="new_conc_chains"
+            )
+
+        parent_conc = st.selectbox(
+            "父结论 (可选)",
+            ["(无)"] + [c.id for c in st.session_state.conclusions],
+            format_func=lambda x: next((c.title for c in st.session_state.conclusions if c.id == x), x),
+            key="new_conc_parent"
+        )
+
+        if st.button("创建结论", key="create_conclusion_btn", type="primary"):
+            if not conc_title.strip():
+                st.error("结论标题不能为空")
+            elif not conc_content.strip():
+                st.error("结论内容不能为空")
+            else:
+                parent_id = parent_conc if parent_conc != "(无)" else ""
+                conclusion = create_conclusion(
+                    title=conc_title.strip(),
+                    content=conc_content.strip(),
+                    conclusion_type=conc_type,
+                    fragment_ids=conc_frags,
+                    scheme_ids=conc_schemes,
+                    tag_ids=[],
+                    status=ConclusionStatus.PROPOSED,
+                    confidence=conc_conf,
+                    created_by=st.session_state.current_operator,
+                    parent_conclusion_id=parent_id,
+                )
+                conclusion.evidence_chain_ids = conc_chains
+                st.session_state.conclusions.append(conclusion)
+                add_log(OperationType.ANNOTATION_ADD, "conclusion", conclusion.id,
+                        f"创建研究结论 '{conclusion.title}'")
+                st.success(f"研究结论 '{conclusion.title}' 创建成功")
+
+    with tab_list:
+        st.subheader(f"研究结论列表 ({len(st.session_state.conclusions)})")
+
+        if not st.session_state.conclusions:
+            st.info("暂无研究结论，请先创建")
+        else:
+            status_filter = st.selectbox(
+                "按状态筛选",
+                ["全部"] + [s.value for s in ConclusionStatus],
+                key="conc_status_filter"
+            )
+            display_concs = st.session_state.conclusions
+            if status_filter != "全部":
+                display_concs = [c for c in display_concs if c.status.value == status_filter]
+
+            st.info(f"共 {len(display_concs)} 条结论 (筛选后)")
+
+            for conc in display_concs:
+                status_color = get_conclusion_status_color(conc.status)
+                status_emoji = get_conclusion_status_emoji(conc.status)
+
+                with st.expander(
+                    f"{status_emoji} {conc.title} — {conc.status.value} (v{conc.version})",
+                    expanded=False
+                ):
+                    col_main, col_side = st.columns([3, 1])
+                    with col_main:
+                        st.markdown(f"### {conc.title}")
+                        st.markdown(
+                            f"<span style='background-color:{status_color};color:white;padding:2px 8px;"
+                            f"border-radius:4px;font-size:12px;'>{status_emoji} {conc.status.value}</span>",
+                            unsafe_allow_html=True
+                        )
+                        st.markdown(f"**类型:** {conc.conclusion_type}")
+                        st.markdown(f"**置信度:** {int(conc.confidence*100)}%")
+                        st.progress(conc.confidence)
+
+                        st.markdown("#### 结论内容")
+                        st.markdown(conc.content)
+
+                        if conc.fragment_ids:
+                            st.markdown(f"**涉及残片:** {', '.join(conc.fragment_ids)}")
+                        if conc.scheme_ids:
+                            scheme_names = [
+                                next((s.name for s in st.session_state.schemes if s.id == sid), sid)
+                                for sid in conc.scheme_ids
+                            ]
+                            st.markdown(f"**涉及方案:** {', '.join(scheme_names)}")
+
+                        if conc.evidence_chain_ids:
+                            st.markdown("#### 证据链")
+                            for cid in conc.evidence_chain_ids:
+                                chain = next(
+                                    (c for c in st.session_state.evidence_chains if c.id == cid),
+                                    None
+                                )
+                                if chain:
+                                    strength = compute_evidence_chain_strength(chain, st.session_state.evidences)
+                                    st.markdown(f"- 🔗 {chain.title} (强度: {int(strength*100)}%)")
+
+                        st.markdown(f"**创建人:** {conc.created_by}")
+                        st.markdown(f"**创建时间:** {conc.created_at}")
+                        if conc.updated_at and conc.updated_at != conc.created_at:
+                            st.markdown(f"**最后更新:** {conc.updated_at}")
+
+                    with col_side:
+                        st.metric("版本", f"v{conc.version}")
+                        st.metric("审核记录", len(conc.review_records))
+
+                    st.divider()
+
+                    tab_review, tab_versions, tab_edit = st.tabs([
+                        "💬 协同审核", "📜 版本历史", "✏️ 编辑结论"
+                    ])
+
+                    with tab_review:
+                        st.markdown("#### 提交审核意见")
+                        review_decision = st.selectbox(
+                            "审核决定",
+                            [d.value for d in ReviewDecision],
+                            key=f"review_decision_{conc.id}"
+                        )
+                        review_comment = st.text_area(
+                            "审核意见",
+                            height=80,
+                            key=f"review_comment_{conc.id}"
+                        )
+                        is_official = st.checkbox(
+                            "正式审核 (会改变结论状态)",
+                            value=False,
+                            key=f"is_official_{conc.id}"
+                        )
+
+                        if st.button("提交审核", key=f"submit_review_{conc.id}"):
+                            if not review_comment.strip():
+                                st.warning("请填写审核意见")
+                            else:
+                                review = create_review_record(
+                                    target_type="conclusion",
+                                    target_id=conc.id,
+                                    decision=ReviewDecision(review_decision),
+                                    comment=review_comment.strip(),
+                                    reviewed_by=st.session_state.current_operator,
+                                    is_official=is_official,
+                                )
+                                add_review_to_conclusion(conc, review)
+                                st.session_state.review_records.append(review)
+                                add_log(OperationType.REVIEW_APPROVE, "conclusion", conc.id,
+                                        f"审核结论 '{conc.title}': {review_decision}")
+                                st.success("审核意见已提交")
+                                st.rerun()
+
+                        st.markdown("#### 审核记录")
+                        if conc.review_records:
+                            for r in reversed(conc.review_records):
+                                official_badge = " 【正式】" if r.is_official else ""
+                                st.markdown(
+                                    f"**{r.decision.value}**{official_badge} — {r.reviewed_by}"
+                                )
+                                if r.comment:
+                                    st.markdown(f"> {r.comment}")
+                                st.caption(f"时间: {r.reviewed_at}")
+                                st.divider()
+                        else:
+                            st.info("暂无审核记录")
+
+                    with tab_versions:
+                        st.markdown("#### 版本历史")
+                        if conc.version_history:
+                            for v in reversed(conc.version_history):
+                                with st.container():
+                                    st.markdown(f"**v{v.version_number}** — {v.status}")
+                                    st.markdown(f"*标题:* {v.title}")
+                                    if v.change_description:
+                                        st.caption(f"变更说明: {v.change_description}")
+                                    st.caption(f"修改人: {v.changed_by} | 时间: {v.changed_at}")
+                                    st.divider()
+                        else:
+                            st.info("无历史版本")
+
+                    with tab_edit:
+                        st.markdown("#### 编辑结论")
+                        edit_title = st.text_input(
+                            "标题", value=conc.title, key=f"edit_title_{conc.id}"
+                        )
+                        edit_content = st.text_area(
+                            "内容", value=conc.content, height=100, key=f"edit_content_{conc.id}"
+                        )
+                        edit_conf = st.slider(
+                            "置信度", 0.0, 1.0, conc.confidence, 0.05, key=f"edit_conf_{conc.id}"
+                        )
+                        change_desc = st.text_input(
+                            "变更说明", key=f"change_desc_{conc.id}"
+                        )
+
+                        if st.button("保存修改 (创建新版本)", key=f"save_edit_{conc.id}"):
+                            update_conclusion(
+                                conc,
+                                title=edit_title.strip() if edit_title.strip() else None,
+                                content=edit_content.strip() if edit_content.strip() else None,
+                                confidence=edit_conf,
+                                change_description=change_desc.strip(),
+                                changed_by=st.session_state.current_operator,
+                            )
+                            add_log(OperationType.ANNOTATION_UPDATE, "conclusion", conc.id,
+                                    f"更新结论 '{conc.title}' 到 v{conc.version}")
+                            st.success(f"已创建新版本 v{conc.version}")
+                            st.rerun()
+
+
+def page_knowledge_graph():
+    st.header("🌐 知识图谱与推理可视化")
+
+    col_ctrl, col_viz = st.columns([1, 3])
+
+    with col_ctrl:
+        st.subheader("图谱设置")
+
+        node_types = st.multiselect(
+            "显示节点类型",
+            [t.value for t in KGNodeType],
+            default=[KGNodeType.FRAGMENT.value, KGNodeType.TAG.value, KGNodeType.SCHEME.value],
+            key="kg_node_types"
+        )
+
+        edge_types = st.multiselect(
+            "显示关系类型",
+            [t.value for t in KGEdgeType],
+            default=[KGEdgeType.HAS_TAG.value, KGEdgeType.MATCHES.value, KGEdgeType.BELONGS_TO.value],
+            key="kg_edge_types"
+        )
+
+        show_evidence = st.checkbox("显示证据节点", value=False, key="kg_show_evidence")
+        show_conclusions = st.checkbox("显示结论节点", value=False, key="kg_show_conclusions")
+
+        if st.button("🔄 生成/刷新知识图谱", key="refresh_kg_btn", type="primary"):
+            kg = build_knowledge_graph(
+                st.session_state.fragments,
+                st.session_state.semantic_annotations,
+                st.session_state.schemes,
+                st.session_state.custom_tags,
+                tag_relations=st.session_state.tag_relations,
+                evidences=st.session_state.evidences if show_evidence else None,
+                conclusions=st.session_state.conclusions if show_conclusions else None,
+                name="碑刻残片知识图谱",
+                created_by=st.session_state.current_operator,
+            )
+            st.session_state.knowledge_graph = kg
+            add_log(OperationType.ANALYSIS_RUN, "knowledge_graph", kg.id,
+                    f"生成知识图谱，包含 {len(kg.nodes)} 个节点，{len(kg.edges)} 条边")
+            st.success(f"知识图谱生成成功: {len(kg.nodes)} 节点, {len(kg.edges)} 边")
+
+        st.divider()
+
+        st.subheader("推理路径发现")
+        frag_options = [f.id for f in st.session_state.fragments]
+        if len(frag_options) >= 2:
+            start_frag = st.selectbox("起点残片", frag_options, key="path_start_frag")
+            end_frag = st.selectbox(
+                "终点残片",
+                [f for f in frag_options if f != start_frag],
+                key="path_end_frag"
+            )
+            max_depth = st.slider("最大路径深度", 2, 6, 4, key="path_max_depth")
+
+            if st.button("🔍 发现推理路径", key="find_path_btn"):
+                if st.session_state.knowledge_graph is None:
+                    st.warning("请先生成知识图谱")
+                else:
+                    paths = find_relation_path_between_fragments(
+                        st.session_state.knowledge_graph,
+                        start_frag,
+                        end_frag,
+                        max_depth=max_depth,
+                    )
+                    st.session_state["inference_paths"] = paths
+                    st.success(f"发现 {len(paths)} 条推理路径")
+        else:
+            st.info("需要至少2个残片才能进行路径发现")
+
+    with col_viz:
+        if st.session_state.knowledge_graph is None:
+            st.info("👈 请在左侧设置参数并点击「生成知识图谱」")
+        else:
+            kg = st.session_state.knowledge_graph
+            kg_nx = build_knowledge_graph_nx(kg)
+
+            st.subheader("知识图谱可视化")
+            st.info(f"节点: {len(kg.nodes)} | 边: {len(kg.edges)}")
+
+            fig, ax = plt.subplots(figsize=(12, 10))
+
+            G = kg_nx
+            if len(G.nodes) > 0:
+                pos = nx.spring_layout(G, seed=42, k=2.0)
+
+                node_colors = []
+                node_sizes = []
+                for node_id in G.nodes():
+                    node_type = G.nodes[node_id].get('node_type', '')
+                    color = get_node_type_color(node_type)
+                    node_colors.append(color)
+                    if node_type == KGNodeType.FRAGMENT.value:
+                        node_sizes.append(800)
+                    elif node_type == KGNodeType.SCHEME.value:
+                        node_sizes.append(1000)
+                    else:
+                        node_sizes.append(500)
+
+                edge_colors = []
+                edge_widths = []
+                for u, v in G.edges():
+                    edge_data = G[u][v]
+                    edge_type = edge_data.get('edge_type', '')
+                    if edge_type == KGEdgeType.MATCHES.value:
+                        edge_colors.append("#2ECC71")
+                    elif edge_type == KGEdgeType.SUPPORTS.value:
+                        edge_colors.append("#3498DB")
+                    elif edge_type == KGEdgeType.CONTRADICTS.value:
+                        edge_colors.append("#E74C3C")
+                    else:
+                        edge_colors.append("#BDC3C7")
+                    edge_widths.append(edge_data.get('weight', 1.0) * 2)
+
+                nx.draw_networkx_nodes(G, pos, ax=ax, node_color=node_colors,
+                                       node_size=node_sizes, alpha=0.85)
+                nx.draw_networkx_edges(G, pos, ax=ax, edge_color=edge_colors,
+                                       width=edge_widths, alpha=0.6, arrows=True,
+                                       arrowsize=15)
+                nx.draw_networkx_labels(G, pos, ax=ax, font_size=8, font_weight="bold")
+
+                from matplotlib.lines import Line2D
+                legend_elements = [
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='#3498DB', markersize=10, label='残片'),
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='#2ECC71', markersize=10, label='边缘特征'),
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='#9B59B6', markersize=10, label='标签'),
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='#F39C12', markersize=10, label='题跋'),
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='#E74C3C', markersize=10, label='方案'),
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='#1ABC9C', markersize=10, label='结论'),
+                    Line2D([0], [0], marker='o', color='w', markerfacecolor='#E67E22', markersize=10, label='证据'),
+                ]
+                ax.legend(handles=legend_elements, loc="upper right", fontsize=8)
+
+            ax.set_title("碑刻残片知识图谱", fontsize=14)
+            ax.axis('off')
+            st.pyplot(fig)
+            plt.close(fig)
+
+            st.divider()
+
+            if "inference_paths" in st.session_state and st.session_state["inference_paths"]:
+                paths = st.session_state["inference_paths"]
+                st.subheader(f"推理路径 ({len(paths)} 条)")
+
+                for i, path in enumerate(paths):
+                    with st.expander(
+                        f"路径 #{i+1} — 强度: {int(path.path_strength*100)}% ({len(path.path_edges)}步)",
+                        expanded=(i == 0)
+                    ):
+                        st.markdown("**路径节点:**")
+                        node_labels = []
+                        for nid in path.path_nodes:
+                            node_data = G.nodes.get(nid, {})
+                            label = node_data.get('label', nid)
+                            ntype = node_data.get('node_type', '')
+                            node_labels.append(f"[{ntype}] {label}")
+                        st.markdown(" → ".join(node_labels))
+
+                        st.markdown("**关系步骤:**")
+                        for j, edge in enumerate(path.path_edges):
+                            src_label = G.nodes.get(edge['source'], {}).get('label', edge['source'])
+                            tgt_label = G.nodes.get(edge['target'], {}).get('label', edge['target'])
+                            st.markdown(
+                                f"{j+1}. **{src_label}** —{edge['label']}→ **{tgt_label}** "
+                                f"(权重: {edge['weight']:.2f})"
+                            )
+
+            st.divider()
+            st.subheader("图谱统计")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("节点总数", len(kg.nodes))
+            with col2:
+                st.metric("边总数", len(kg.edges))
+            with col3:
+                frag_nodes = sum(1 for n in kg.nodes if n.node_type == KGNodeType.FRAGMENT)
+                st.metric("残片节点", frag_nodes)
+            with col4:
+                tag_nodes = sum(1 for n in kg.nodes if n.node_type == KGNodeType.TAG)
+                st.metric("标签节点", tag_nodes)
+
+
+def page_deep_compare():
+    st.header("⚖️ 跨方案深度比对")
+
+    if len(st.session_state.schemes) < 2:
+        st.info("至少需要2个方案才能进行深度对比")
+        return
+
+    scheme_map = {s.id: s for s in st.session_state.schemes}
+    scheme_labels = {s.id: f"{s.name} (v{s.current_version})" for s in st.session_state.schemes}
+    scheme_ids = list(scheme_map.keys())
+
+    col_a, col_b, col_depth = st.columns([2, 2, 2])
+    with col_a:
+        id_a = st.selectbox(
+            "方案 A", scheme_ids,
+            format_func=lambda x: scheme_labels[x],
+            key="deep_cmp_scheme_a"
+        )
+    with col_b:
+        available_b = [sid for sid in scheme_ids if sid != id_a] or scheme_ids
+        id_b = st.selectbox(
+            "方案 B", available_b,
+            format_func=lambda x: scheme_labels[x],
+            key="deep_cmp_scheme_b"
+        )
+    with col_depth:
+        compare_depth = st.selectbox(
+            "比对深度",
+            [d.value for d in SchemeCompareDepth],
+            key="deep_cmp_depth"
+        )
+
+    if st.button("🔍 执行深度比对", key="run_deep_compare_btn", type="primary"):
+        result = deep_compare_schemes(
+            scheme_map[id_a],
+            scheme_map[id_b],
+            st.session_state.fragments,
+            st.session_state.semantic_annotations,
+            st.session_state.custom_tags,
+            evidences=st.session_state.evidences,
+            conclusions=st.session_state.conclusions,
+            depth=SchemeCompareDepth(compare_depth),
+        )
+        st.session_state.deep_compare_result = result
+        st.success("深度比对完成")
+
+    result = st.session_state.deep_compare_result
+    if result is None:
+        st.info("请选择方案并点击「执行深度比对」")
+        return
+
+    st.divider()
+    st.subheader("📊 比对概览")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("整体一致性", f"{int(result.overall_consistency_score*100)}%")
+        st.progress(result.overall_consistency_score)
+    with col2:
+        st.metric("匹配相似度", f"{int(result.match_similarity*100)}%")
+        st.progress(result.match_similarity)
+    with col3:
+        st.metric("标签相似度", f"{int(result.tag_similarity*100)}%")
+        st.progress(result.tag_similarity)
+
+    st.divider()
+
+    tab_overlap, tab_conflict, tab_consensus, tab_evidence, tab_conclusions = st.tabs([
+        "🔄 重叠分析", "⚠️ 冲突点", "🤝 共识点", "📦 证据对比", "📝 结论对齐"
+    ])
+
+    with tab_overlap:
+        st.markdown("### 残片重叠")
+        if result.fragment_overlap:
+            st.success(f"两方案共享 {len(result.fragment_overlap)} 个残片")
+            for fid in result.fragment_overlap:
+                frag = next((f for f in st.session_state.fragments if f.id == fid), None)
+                if frag:
+                    st.markdown(f"- 🧩 **{fid}**")
+        else:
+            st.info("两方案没有共享的残片")
+
+        st.markdown("### 边缘重叠")
+        if result.edge_overlap:
+            st.success(f"两方案共享 {len(result.edge_overlap)} 条边缘")
+            for eid in result.edge_overlap[:10]:
+                st.markdown(f"- 🔗 {eid}")
+            if len(result.edge_overlap) > 10:
+                st.caption(f"... 还有 {len(result.edge_overlap) - 10} 条")
+        else:
+            st.info("两方案没有共享的边缘")
+
+        st.markdown("### 覆盖率对比图")
+        cov_a, matched_a, total_a = compute_scheme_coverage(scheme_map[id_a], st.session_state.fragments)
+        cov_b, matched_b, total_b = compute_scheme_coverage(scheme_map[id_b], st.session_state.fragments)
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        x = [scheme_map[id_a].name, scheme_map[id_b].name]
+        y = [cov_a * 100, cov_b * 100]
+        bars = ax.bar(x, y, color=["#3498DB", "#E74C3C"], alpha=0.8)
+        ax.set_ylabel("覆盖率 (%)")
+        ax.set_ylim(0, 100)
+        ax.set_title("方案覆盖率对比")
+
+        for bar, val in zip(bars, y):
+            ax.text(bar.get_x() + bar.get_width()/2., bar.get_height() + 1,
+                    f"{val:.1f}%", ha='center', va='bottom')
+
+        st.pyplot(fig)
+        plt.close(fig)
+
+    with tab_conflict:
+        st.markdown("### 冲突点分析")
+        if result.conflict_points:
+            st.warning(f"发现 {len(result.conflict_points)} 个冲突点")
+            for i, cp in enumerate(result.conflict_points):
+                with st.expander(f"⚠️ 冲突 #{i+1}: {cp['type']}", expanded=True):
+                    st.markdown(f"**详情:** {cp['detail']}")
+                    if 'fragment_id' in cp:
+                        st.markdown(f"**涉及残片:** {cp['fragment_id']}")
+                    if 'edge_id' in cp:
+                        st.markdown(f"**涉及边缘:** {cp['edge_id']}")
+        else:
+            st.success("未发现明显冲突点")
+
+    with tab_consensus:
+        st.markdown("### 共识点分析")
+        if result.consensus_points:
+            st.success(f"发现 {len(result.consensus_points)} 个共识点")
+            for i, cp in enumerate(result.consensus_points):
+                with st.expander(f"🤝 共识 #{i+1}: {cp['type']}", expanded=True):
+                    st.markdown(f"**详情:** {cp['detail']}")
+                    if 'fragment_id' in cp:
+                        st.markdown(f"**涉及残片:** {cp['fragment_id']}")
+        else:
+            st.info("未发现共识点")
+
+    with tab_evidence:
+        st.markdown("### 证据对比")
+        if result.shared_evidence:
+            st.success(f"两方案共享 {len(result.shared_evidence)} 条证据")
+            for eid in result.shared_evidence:
+                ev = next((e for e in st.session_state.evidences if e.id == eid), None)
+                if ev:
+                    st.markdown(f"- 📄 **{ev.title}** (置信度: {int(ev.confidence*100)}%)")
+        else:
+            st.info("两方案没有共享的证据")
+
+        if result.conflicting_evidence:
+            st.warning(f"发现 {len(result.conflicting_evidence)} 条冲突证据")
+            for eid in result.conflicting_evidence:
+                st.markdown(f"- ⚠️ {eid}")
+        else:
+            st.success("未发现冲突证据")
+
+    with tab_conclusions:
+        st.markdown("### 结论对齐分析")
+        if result.conclusion_alignment:
+            st.success(f"两方案对齐的研究结论有 {len(result.conclusion_alignment)} 条")
+            for cid in result.conclusion_alignment:
+                conc = next((c for c in st.session_state.conclusions if c.id == cid), None)
+                if conc:
+                    status_color = get_conclusion_status_color(conc.status)
+                    status_emoji = get_conclusion_status_emoji(conc.status)
+                    st.markdown(
+                        f"- {status_emoji} **{conc.title}** "
+                        f"({conc.status.value}, 置信度: {int(conc.confidence*100)}%)"
+                    )
+        else:
+            st.info("两方案没有对齐的研究结论")
+
+
 def main():
     init_session_state()
 
-    st.set_page_config(page_title="多方案可追溯拼接分析平台", layout="wide", page_icon="🪨")
-    st.title("🪨 多方案可追溯拼接分析平台")
+    st.set_page_config(page_title="残片知识图谱与协同考释平台", layout="wide", page_icon="🪨")
+    st.title("🪨 残片知识图谱与协同考释平台")
 
     with st.sidebar:
         st.subheader("研究员信息")
         st.session_state.current_operator = st.text_input("操作人", value=st.session_state.current_operator)
         st.divider()
-        st.caption("碑刻拓片残片拼接分析系统 v3.0")
-        st.caption("支持语义标注、智能检索、聚类分析、线索发现")
 
-    tab_fragments, tab_edges, tab_tags, tab_annotation, tab_analysis, tab_schemes, tab_compare, tab_search, tab_viz, tab_logs, tab_io = st.tabs([
+        conc_stats = get_conclusion_statistics(st.session_state.conclusions)
+        st.metric("研究结论", conc_stats["total"])
+        st.metric("证据条目", len(st.session_state.evidences))
+        st.metric("知识图谱边", len(st.session_state.knowledge_graph.edges) if st.session_state.knowledge_graph else 0)
+
+        st.divider()
+        st.caption("残片知识图谱与协同考释平台 v4.0")
+        st.caption("支持知识图谱、证据链、协同审核、推理可视化")
+
+    tab_fragments, tab_edges, tab_tags, tab_annotation, tab_analysis, tab_schemes, tab_evidence, tab_conclusions, tab_kg, tab_deep_compare, tab_search, tab_viz, tab_logs, tab_io = st.tabs([
         "残片管理", "边缘标注", "标签体系", "语义标注", "候选分析",
-        "方案管理", "方案对比", "智能检索", "聚类分析", "操作日志", "导入/导出",
+        "方案管理", "证据链", "研究结论", "知识图谱", "深度比对",
+        "智能检索", "聚类分析", "操作日志", "导入/导出",
     ])
 
     with tab_fragments:
@@ -1952,14 +2989,22 @@ def main():
         page_edges()
     with tab_tags:
         page_tag_management()
+        st.divider()
+        page_tag_relations()
     with tab_annotation:
         page_semantic_annotation()
     with tab_analysis:
         page_analysis()
     with tab_schemes:
         page_schemes()
-    with tab_compare:
-        page_compare()
+    with tab_evidence:
+        page_evidence_management()
+    with tab_conclusions:
+        page_research_conclusions()
+    with tab_kg:
+        page_knowledge_graph()
+    with tab_deep_compare:
+        page_deep_compare()
     with tab_search:
         page_semantic_search()
     with tab_viz:

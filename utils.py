@@ -1170,3 +1170,740 @@ def get_tag_category_name(tag_id, tags, annotations, fragment_id):
             if t.id == tag_id:
                 return t.category.value
     return TagCategory.CUSTOM.value
+
+
+def add_tag_relation(relations, source_tag_id, target_tag_id, relation_type, confidence=1.0,
+                     description="", created_by=""):
+    from models import TagRelation
+    existing = [r for r in relations
+                if (r.source_tag_id == source_tag_id and r.target_tag_id == target_tag_id)
+                or (r.source_tag_id == target_tag_id and r.target_tag_id == source_tag_id)]
+    if existing:
+        return existing[0], False
+    relation = TagRelation(
+        source_tag_id=source_tag_id,
+        target_tag_id=target_tag_id,
+        relation_type=relation_type,
+        confidence=confidence,
+        description=description,
+        created_by=created_by,
+        created_at=now_str(),
+    )
+    relations.append(relation)
+    return relation, True
+
+
+def get_tag_relations(relations, tag_id=None, relation_type=None):
+    result = relations
+    if tag_id:
+        result = [r for r in result if r.source_tag_id == tag_id or r.target_tag_id == tag_id]
+    if relation_type:
+        result = [r for r in result if r.relation_type == relation_type]
+    return result
+
+
+def find_related_tags(relations, tag_id, max_depth=2):
+    visited = {tag_id}
+    current_level = {tag_id}
+    all_related = []
+    for depth in range(max_depth):
+        next_level = set()
+        for tid in current_level:
+            for rel in relations:
+                other = None
+                if rel.source_tag_id == tid:
+                    other = rel.target_tag_id
+                elif rel.target_tag_id == tid:
+                    other = rel.source_tag_id
+                if other and other not in visited:
+                    visited.add(other)
+                    next_level.add(other)
+                    all_related.append({
+                        "tag_id": other,
+                        "relation_type": rel.relation_type,
+                        "depth": depth + 1,
+                        "confidence": rel.confidence,
+                    })
+        current_level = next_level
+        if not current_level:
+            break
+    return all_related
+
+
+def create_evidence(title, evidence_type, description="", source_type="", source_id="",
+                    fragment_ids=None, scheme_ids=None, tag_ids=None, confidence=1.0,
+                    created_by="", references=None):
+    from models import EvidenceItem, EvidenceType
+    if isinstance(evidence_type, str):
+        evidence_type = EvidenceType(evidence_type)
+    evidence = EvidenceItem(
+        evidence_type=evidence_type,
+        title=title,
+        description=description,
+        source_type=source_type,
+        source_id=source_id,
+        fragment_ids=fragment_ids or [],
+        scheme_ids=scheme_ids or [],
+        tag_ids=tag_ids or [],
+        confidence=confidence,
+        created_by=created_by,
+        created_at=now_str(),
+        updated_at=now_str(),
+        references=references or [],
+    )
+    return evidence
+
+
+def get_evidence_for_fragment(evidences, fragment_id):
+    return [e for e in evidences if fragment_id in e.fragment_ids]
+
+
+def get_evidence_for_scheme(evidences, scheme_id):
+    return [e for e in evidences if scheme_id in e.scheme_ids]
+
+
+def create_evidence_chain(title, description="", evidence_ids=None, conclusion_id="",
+                          created_by=""):
+    from models import EvidenceChain
+    chain = EvidenceChain(
+        title=title,
+        description=description,
+        evidence_ids=evidence_ids or [],
+        conclusion_id=conclusion_id,
+        created_by=created_by,
+        created_at=now_str(),
+        updated_at=now_str(),
+    )
+    return chain
+
+
+def add_evidence_to_chain(chain, evidence_id):
+    if evidence_id not in chain.evidence_ids:
+        chain.evidence_ids.append(evidence_id)
+        chain.updated_at = now_str()
+    return chain
+
+
+def compute_evidence_chain_strength(chain, evidences):
+    if not chain.evidence_ids:
+        return 0.0
+    confidences = []
+    for eid in chain.evidence_ids:
+        ev = next((e for e in evidences if e.id == eid), None)
+        if ev:
+            confidences.append(ev.confidence)
+    if not confidences:
+        return 0.0
+    avg_conf = sum(confidences) / len(confidences)
+    count_factor = min(1.0, len(confidences) / 5.0)
+    return min(1.0, avg_conf * (0.6 + 0.4 * count_factor))
+
+
+def create_conclusion(title, content, conclusion_type="", fragment_ids=None, scheme_ids=None,
+                      tag_ids=None, status=None, confidence=0.0, created_by="",
+                      parent_conclusion_id=""):
+    from models import ResearchConclusion, ConclusionStatus
+    if status is None:
+        status = ConclusionStatus.PROPOSED
+    elif isinstance(status, str):
+        status = ConclusionStatus(status)
+    conclusion = ResearchConclusion(
+        title=title,
+        content=content,
+        conclusion_type=conclusion_type,
+        fragment_ids=fragment_ids or [],
+        scheme_ids=scheme_ids or [],
+        tag_ids=tag_ids or [],
+        status=status,
+        confidence=confidence,
+        created_by=created_by,
+        created_at=now_str(),
+        updated_at=now_str(),
+        version=1,
+        parent_conclusion_id=parent_conclusion_id,
+    )
+    return conclusion
+
+
+def update_conclusion(conclusion, title=None, content=None, status=None, confidence=None,
+                      change_description="", changed_by=""):
+    from models import ConclusionVersion, ConclusionStatus
+    old_version = ConclusionVersion(
+        version_number=conclusion.version,
+        title=conclusion.title,
+        content=conclusion.content,
+        status=conclusion.status.value if hasattr(conclusion.status, 'value') else str(conclusion.status),
+        confidence=conclusion.confidence,
+        changed_by=conclusion.created_by,
+        changed_at=conclusion.updated_at,
+        change_description="初始版本" if conclusion.version == 1 else "",
+    )
+    conclusion.version_history.append(old_version)
+    conclusion.version += 1
+    if title is not None:
+        conclusion.title = title
+    if content is not None:
+        conclusion.content = content
+    if status is not None:
+        if isinstance(status, str):
+            status = ConclusionStatus(status)
+        conclusion.status = status
+    if confidence is not None:
+        conclusion.confidence = confidence
+    conclusion.updated_at = now_str()
+    new_version_record = ConclusionVersion(
+        version_number=conclusion.version,
+        title=conclusion.title,
+        content=conclusion.content,
+        status=conclusion.status.value if hasattr(conclusion.status, 'value') else str(conclusion.status),
+        confidence=conclusion.confidence,
+        changed_by=changed_by,
+        changed_at=conclusion.updated_at,
+        change_description=change_description,
+    )
+    return conclusion
+
+
+def create_review_record(target_type, target_id, decision, comment="", evidence_refs=None,
+                         reviewed_by="", is_official=False):
+    from models import ReviewRecord, ReviewDecision
+    if isinstance(decision, str):
+        decision = ReviewDecision(decision)
+    record = ReviewRecord(
+        target_type=target_type,
+        target_id=target_id,
+        decision=decision,
+        comment=comment,
+        evidence_refs=evidence_refs or [],
+        reviewed_by=reviewed_by,
+        reviewed_at=now_str(),
+        is_official=is_official,
+    )
+    return record
+
+
+def add_review_to_conclusion(conclusion, review_record):
+    conclusion.review_records.append(review_record)
+    from models import ReviewDecision, ConclusionStatus
+    if review_record.decision == ReviewDecision.APPROVE and review_record.is_official:
+        conclusion.status = ConclusionStatus.ACCEPTED
+    elif review_record.decision == ReviewDecision.REJECT and review_record.is_official:
+        conclusion.status = ConclusionStatus.REJECTED
+    elif review_record.decision == ReviewDecision.REVISE:
+        conclusion.status = ConclusionStatus.REVISED
+    elif review_record.decision == ReviewDecision.FLAG:
+        conclusion.status = ConclusionStatus.CONTROVERSIAL
+    conclusion.updated_at = now_str()
+    return conclusion
+
+
+def get_conclusions_for_fragment(conclusions, fragment_id):
+    return [c for c in conclusions if fragment_id in c.fragment_ids]
+
+
+def get_conclusions_for_scheme(conclusions, scheme_id):
+    return [c for c in conclusions if scheme_id in c.scheme_ids]
+
+
+def get_review_records_for_target(review_records, target_type, target_id):
+    return [r for r in review_records if r.target_type == target_type and r.target_id == target_id]
+
+
+def build_knowledge_graph(fragments, annotations, schemes, tags, tag_relations=None,
+                          evidences=None, conclusions=None, name="知识图谱", created_by=""):
+    from models import (
+        KnowledgeGraph, KGNode, KGEdge, KGNodeType, KGEdgeType,
+        TagRelationType
+    )
+    kg = KnowledgeGraph(name=name, created_by=created_by, created_at=now_str())
+    tag_map = {t.id: t for t in tags}
+    tag_color_map = build_tag_color_map(tags)
+
+    for frag in fragments:
+        node = KGNode(
+            id=f"frag_{frag.id}",
+            node_type=KGNodeType.FRAGMENT,
+            label=frag.id,
+            description=f"残片 {frag.id}，尺寸 {frag.image_width}x{frag.image_height}",
+            properties={
+                "image_width": frag.image_width,
+                "image_height": frag.image_height,
+                "edge_count": len(frag.edges),
+                "inscriptions": frag.inscriptions,
+                "is_locked": frag.is_locked,
+                "locked_scheme_id": frag.locked_scheme_id or "",
+            },
+        )
+        kg.nodes.append(node)
+
+        for edge in frag.edges:
+            edge_node_id = f"edge_{edge.id}"
+            if not any(n.id == edge_node_id for n in kg.nodes):
+                edge_node = KGNode(
+                    id=edge_node_id,
+                    node_type=KGNodeType.EDGE_FEATURE,
+                    label=f"{edge.direction.value}边缘",
+                    description=f"边缘 {edge.id}，{edge.edge_type.value}，{edge.defect_type.value}",
+                    properties={
+                        "direction": edge.direction.value,
+                        "edge_type": edge.edge_type.value,
+                        "defect_type": edge.defect_type.value,
+                        "length_px": edge.length_px,
+                        "curvature": edge.curvature,
+                        "roughness": edge.roughness,
+                    },
+                )
+                kg.nodes.append(edge_node)
+            kg.edges.append(KGEdge(
+                source_id=f"frag_{frag.id}",
+                target_id=edge_node_id,
+                edge_type=KGEdgeType.HAS_EDGE,
+                label="具有边缘",
+                weight=1.0,
+            ))
+
+        ann = get_annotation_for_fragment(annotations, frag.id)
+        if ann:
+            all_tag_ids = ann.get_all_tag_ids()
+            for tid in all_tag_ids:
+                tag = tag_map.get(tid)
+                if tag:
+                    tag_node_id = f"tag_{tid}"
+                    if not any(n.id == tag_node_id for n in kg.nodes):
+                        tag_node = KGNode(
+                            id=tag_node_id,
+                            node_type=KGNodeType.TAG,
+                            label=tag.name,
+                            description=f"{tag.category.value}标签: {tag.name}",
+                            properties={
+                                "category": tag.category.value,
+                                "color": tag.color,
+                                "description": tag.description,
+                            },
+                        )
+                        kg.nodes.append(tag_node)
+                    kg.edges.append(KGEdge(
+                        source_id=f"frag_{frag.id}",
+                        target_id=tag_node_id,
+                        edge_type=KGEdgeType.HAS_TAG,
+                        label="具有标签",
+                        weight=0.8,
+                    ))
+
+            if ann.inscription_content:
+                inscr_node_id = f"inscr_{frag.id}"
+                inscr_node = KGNode(
+                    id=inscr_node_id,
+                    node_type=KGNodeType.INSCRIPTION,
+                    label=f"{frag.id}题跋",
+                    description=ann.inscription_content[:100],
+                    properties={
+                        "content": ann.inscription_content,
+                        "tags": ann.inscription_tags,
+                    },
+                )
+                kg.nodes.append(inscr_node)
+                kg.edges.append(KGEdge(
+                    source_id=f"frag_{frag.id}",
+                    target_id=inscr_node_id,
+                    edge_type=KGEdgeType.RELATED_TO,
+                    label="有题跋",
+                    weight=1.0,
+                ))
+
+    if tag_relations:
+        for rel in tag_relations:
+            src_tag_id = f"tag_{rel.source_tag_id}"
+            tgt_tag_id = f"tag_{rel.target_tag_id}"
+            if any(n.id == src_tag_id for n in kg.nodes) and any(n.id == tgt_tag_id for n in kg.nodes):
+                edge = KGEdge(
+                    source_id=src_tag_id,
+                    target_id=tgt_tag_id,
+                    edge_type=KGEdgeType.TAG_RELATION,
+                    label=rel.relation_type.value,
+                    weight=rel.confidence,
+                    properties={"relation_type": rel.relation_type.value},
+                )
+                kg.edges.append(edge)
+
+    for scheme in schemes:
+        scheme_node = KGNode(
+            id=f"scheme_{scheme.id}",
+            node_type=KGNodeType.SCHEME,
+            label=scheme.name,
+            description=f"方案 {scheme.name}，v{scheme.current_version}，{len(scheme.matches)}个匹配",
+            properties={
+                "version": scheme.current_version,
+                "match_count": len(scheme.matches),
+                "is_locked": scheme.is_locked,
+                "description": scheme.description,
+            },
+        )
+        kg.nodes.append(scheme_node)
+
+        frag_ids = scheme.get_involved_fragment_ids()
+        for fid in frag_ids:
+            kg.edges.append(KGEdge(
+                source_id=f"frag_{fid}",
+                target_id=f"scheme_{scheme.id}",
+                edge_type=KGEdgeType.BELONGS_TO,
+                label="属于方案",
+                weight=0.9,
+            ))
+
+        for m in scheme.matches:
+            edge_a_id = f"edge_{m.edge_a_id}"
+            edge_b_id = f"edge_{m.edge_b_id}"
+            if any(n.id == edge_a_id for n in kg.nodes) and any(n.id == edge_b_id for n in kg.nodes):
+                kg.edges.append(KGEdge(
+                    source_id=edge_a_id,
+                    target_id=edge_b_id,
+                    edge_type=KGEdgeType.MATCHES,
+                    label=f"匹配({m.similarity:.2f})",
+                    weight=m.similarity,
+                    properties={
+                        "review_status": m.review_status.value,
+                        "similarity": m.similarity,
+                        "scheme_id": scheme.id,
+                    },
+                ))
+
+    if evidences:
+        for ev in evidences:
+            ev_node = KGNode(
+                id=f"evidence_{ev.id}",
+                node_type=KGNodeType.EVIDENCE,
+                label=ev.title,
+                description=ev.description[:100] if ev.description else "",
+                properties={
+                    "evidence_type": ev.evidence_type.value,
+                    "confidence": ev.confidence,
+                    "created_by": ev.created_by,
+                },
+            )
+            kg.nodes.append(ev_node)
+
+            for fid in ev.fragment_ids:
+                kg.edges.append(KGEdge(
+                    source_id=f"evidence_{ev.id}",
+                    target_id=f"frag_{fid}",
+                    edge_type=KGEdgeType.RELATED_TO,
+                    label="涉及残片",
+                    weight=ev.confidence,
+                ))
+
+            for sid in ev.scheme_ids:
+                kg.edges.append(KGEdge(
+                    source_id=f"evidence_{ev.id}",
+                    target_id=f"scheme_{sid}",
+                    edge_type=KGEdgeType.SUPPORTS,
+                    label="支持方案",
+                    weight=ev.confidence,
+                ))
+
+    if conclusions:
+        for conc in conclusions:
+            conc_node = KGNode(
+                id=f"conclusion_{conc.id}",
+                node_type=KGNodeType.CONCLUSION,
+                label=conc.title,
+                description=conc.content[:100] if conc.content else "",
+                properties={
+                    "status": conc.status.value,
+                    "confidence": conc.confidence,
+                    "version": conc.version,
+                    "created_by": conc.created_by,
+                    "conclusion_type": conc.conclusion_type,
+                },
+            )
+            kg.nodes.append(conc_node)
+
+            for fid in conc.fragment_ids:
+                kg.edges.append(KGEdge(
+                    source_id=f"conclusion_{conc.id}",
+                    target_id=f"frag_{fid}",
+                    edge_type=KGEdgeType.RELATED_TO,
+                    label="涉及残片",
+                    weight=0.7,
+                ))
+
+            for sid in conc.scheme_ids:
+                kg.edges.append(KGEdge(
+                    source_id=f"conclusion_{conc.id}",
+                    target_id=f"scheme_{sid}",
+                    edge_type=KGEdgeType.DERIVED_FROM,
+                    label="源自方案",
+                    weight=0.8,
+                ))
+
+            for eid in conc.evidence_chain_ids:
+                kg.edges.append(KGEdge(
+                    source_id=f"conclusion_{conc.id}",
+                    target_id=f"evidence_{eid}",
+                    edge_type=KGEdgeType.SUPPORTS,
+                    label="证据支持",
+                    weight=0.9,
+                ))
+
+    return kg
+
+
+def build_knowledge_graph_nx(kg):
+    import networkx as nx
+    G = nx.DiGraph()
+    for node in kg.nodes:
+        G.add_node(
+            node.id,
+            label=node.label,
+            node_type=node.node_type.value,
+            description=node.description,
+            **node.properties,
+        )
+    for edge in kg.edges:
+        G.add_edge(
+            edge.source_id,
+            edge.target_id,
+            label=edge.label,
+            edge_type=edge.edge_type.value,
+            weight=edge.weight,
+            **edge.properties,
+        )
+    return G
+
+
+def find_inference_paths(kg_nx, start_node_id, end_node_id, max_depth=5, top_k=5):
+    import networkx as nx
+    from models import InferencePath
+    paths = []
+    try:
+        all_paths = list(nx.all_simple_paths(kg_nx, start_node_id, end_node_id, cutoff=max_depth))
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
+        return []
+
+    for path_nodes in all_paths:
+        path_edges = []
+        total_weight = 0.0
+        for i in range(len(path_nodes) - 1):
+            edge_data = kg_nx[path_nodes[i]][path_nodes[i+1]]
+            path_edges.append({
+                "source": path_nodes[i],
+                "target": path_nodes[i+1],
+                "label": edge_data.get("label", ""),
+                "edge_type": edge_data.get("edge_type", ""),
+                "weight": edge_data.get("weight", 1.0),
+            })
+            total_weight += edge_data.get("weight", 1.0)
+
+        avg_weight = total_weight / max(len(path_edges), 1)
+        length_factor = 1.0 / (len(path_edges) ** 0.5)
+        strength = avg_weight * length_factor
+
+        path_obj = InferencePath(
+            start_node_id=start_node_id,
+            end_node_id=end_node_id,
+            path_nodes=path_nodes,
+            path_edges=path_edges,
+            path_strength=strength,
+            description=f"从{start_node_id}到{end_node_id}的推理路径，共{len(path_edges)}步",
+        )
+        paths.append(path_obj)
+
+    paths.sort(key=lambda p: p.path_strength, reverse=True)
+    return paths[:top_k]
+
+
+def find_relation_path_between_fragments(kg, frag_a_id, frag_b_id, max_depth=4):
+    kg_nx = build_knowledge_graph_nx(kg)
+    return find_inference_paths(
+        kg_nx,
+        f"frag_{frag_a_id}",
+        f"frag_{frag_b_id}",
+        max_depth=max_depth,
+        top_k=10,
+    )
+
+
+def get_node_type_color(node_type):
+    from models import KGNodeType
+    color_map = {
+        KGNodeType.FRAGMENT: "#3498DB",
+        KGNodeType.EDGE_FEATURE: "#2ECC71",
+        KGNodeType.TAG: "#9B59B6",
+        KGNodeType.INSCRIPTION: "#F39C12",
+        KGNodeType.SCHEME: "#E74C3C",
+        KGNodeType.CONCLUSION: "#1ABC9C",
+        KGNodeType.EVIDENCE: "#E67E22",
+        KGNodeType.RESEARCHER: "#34495E",
+    }
+    if isinstance(node_type, str):
+        for nt, color in color_map.items():
+            if nt.value == node_type:
+                return color
+        return "#95A5A6"
+    return color_map.get(node_type, "#95A5A6")
+
+
+def deep_compare_schemes(scheme_a, scheme_b, fragments, annotations, tags,
+                         evidences=None, conclusions=None, depth=None):
+    from models import (
+        SchemeDeepCompareResult, SchemeCompareDepth,
+    )
+    if depth is None:
+        depth = SchemeCompareDepth.FULL
+    elif isinstance(depth, str):
+        depth = SchemeCompareDepth(depth)
+
+    result = SchemeDeepCompareResult(
+        scheme_a_id=scheme_a.id,
+        scheme_b_id=scheme_b.id,
+        scheme_a_name=scheme_a.name,
+        scheme_b_name=scheme_b.name,
+        compare_depth=depth,
+    )
+
+    frags_a = scheme_a.get_involved_fragment_ids()
+    frags_b = scheme_b.get_involved_fragment_ids()
+    result.fragment_overlap = list(frags_a & frags_b)
+
+    edges_a = scheme_a.get_involved_edge_ids()
+    edges_b = scheme_b.get_involved_edge_ids()
+    result.edge_overlap = list(edges_a & edges_b)
+
+    total_edges = edges_a | edges_b
+    result.match_similarity = len(result.edge_overlap) / len(total_edges) if total_edges else 1.0
+
+    tag_ids_a = set()
+    tag_ids_b = set()
+    for fid in frags_a:
+        ann = get_annotation_for_fragment(annotations, fid)
+        if ann:
+            tag_ids_a.update(ann.get_all_tag_ids())
+    for fid in frags_b:
+        ann = get_annotation_for_fragment(annotations, fid)
+        if ann:
+            tag_ids_b.update(ann.get_all_tag_ids())
+
+    if tag_ids_a or tag_ids_b:
+        result.tag_similarity = len(tag_ids_a & tag_ids_b) / len(tag_ids_a | tag_ids_b) if (tag_ids_a | tag_ids_b) else 0.0
+
+    if depth in (SchemeCompareDepth.EVIDENCE, SchemeCompareDepth.FULL) and evidences:
+        ev_a = set()
+        ev_b = set()
+        for ev in evidences:
+            if scheme_a.id in ev.scheme_ids:
+                ev_a.add(ev.id)
+            if scheme_b.id in ev.scheme_ids:
+                ev_b.add(ev.id)
+        result.shared_evidence = list(ev_a & ev_b)
+        result.conflicting_evidence = []
+
+    if depth in (SchemeCompareDepth.CONCLUSION, SchemeCompareDepth.FULL) and conclusions:
+        conc_a = set()
+        conc_b = set()
+        for conc in conclusions:
+            if scheme_a.id in conc.scheme_ids:
+                conc_a.add(conc.id)
+            if scheme_b.id in conc.scheme_ids:
+                conc_b.add(conc.id)
+
+        for cid in conc_a & conc_b:
+            result.conclusion_alignment.append(cid)
+
+    conflict_points = []
+    consensus_points = []
+
+    for fid in result.fragment_overlap:
+        frag = next((f for f in fragments if f.id == fid), None)
+        if frag:
+            if frag.is_locked and frag.locked_scheme_id not in (scheme_a.id, scheme_b.id):
+                conflict_points.append({
+                    "type": "锁定残片冲突",
+                    "fragment_id": fid,
+                    "detail": f"残片 {fid} 已锁定于其他方案",
+                })
+            else:
+                consensus_points.append({
+                    "type": "共享残片",
+                    "fragment_id": fid,
+                    "detail": f"残片 {fid} 在两个方案中均有使用",
+                })
+
+    for eid in result.edge_overlap:
+        match_a = next((m for m in scheme_a.matches if m.edge_a_id == eid or m.edge_b_id == eid), None)
+        match_b = next((m for m in scheme_b.matches if m.edge_a_id == eid or m.edge_b_id == eid), None)
+        if match_a and match_b:
+            other_a = match_a.edge_b_fragment_id if match_a.edge_a_fragment_id == frag else match_a.edge_a_fragment_id
+            other_b = match_b.edge_b_fragment_id if match_b.edge_a_fragment_id == frag else match_b.edge_a_fragment_id
+            if other_a != other_b:
+                conflict_points.append({
+                    "type": "边缘匹配冲突",
+                    "edge_id": eid,
+                    "detail": f"边缘 {eid} 在两方案中匹配不同残片",
+                })
+
+    result.conflict_points = conflict_points
+    result.consensus_points = consensus_points
+
+    consistency = 0.0
+    consistency += result.match_similarity * 0.4
+    consistency += result.tag_similarity * 0.3
+    if result.fragment_overlap:
+        consistency += 0.3 if len(conflict_points) == 0 else 0.1
+    result.overall_consistency_score = consistency
+
+    return result
+
+
+def generate_auto_evidence(fragments, annotations, schemes, candidate_matches, operator=""):
+    from models import EvidenceType
+    auto_evidences = []
+
+    for m in candidate_matches:
+        if m.review_status.value == "已通过":
+            ev = create_evidence(
+                title=f"边缘匹配证据: {m.edge_a_fragment_id} ↔ {m.edge_b_fragment_id}",
+                evidence_type=EvidenceType.EDGE_FEATURE,
+                description=f"通过边缘特征相似度分析，{m.edge_a_fragment_id}的边缘{m.edge_a_id}与{m.edge_b_fragment_id}的边缘{m.edge_b_id}高度匹配，相似度{m.similarity:.3f}",
+                source_type="auto_analysis",
+                source_id=f"match_{m.edge_a_id}_{m.edge_b_id}",
+                fragment_ids=[m.edge_a_fragment_id, m.edge_b_fragment_id],
+                confidence=m.similarity,
+                created_by=operator,
+            )
+            auto_evidences.append(ev)
+
+    for ann in annotations:
+        if ann.inscription_content and len(ann.inscription_content) > 5:
+            ev = create_evidence(
+                title=f"题跋文字证据: {ann.fragment_id}",
+                evidence_type=EvidenceType.INSCRIPTION_TEXT,
+                description=f"残片 {ann.fragment_id} 的题跋内容为: {ann.inscription_content}",
+                source_type="annotation",
+                source_id=f"ann_{ann.id}",
+                fragment_ids=[ann.fragment_id],
+                tag_ids=ann.inscription_tags,
+                confidence=0.9,
+                created_by=operator,
+            )
+            auto_evidences.append(ev)
+
+    return auto_evidences
+
+
+def get_conclusion_statistics(conclusions):
+    from models import ConclusionStatus
+    stats = {
+        "total": len(conclusions),
+        "by_status": {},
+        "by_type": {},
+        "by_creator": {},
+    }
+    for status in ConclusionStatus:
+        stats["by_status"][status.value] = 0
+    for conc in conclusions:
+        stats["by_status"][conc.status.value] = stats["by_status"].get(conc.status.value, 0) + 1
+        if conc.conclusion_type:
+            stats["by_type"][conc.conclusion_type] = stats["by_type"].get(conc.conclusion_type, 0) + 1
+        if conc.created_by:
+            stats["by_creator"][conc.created_by] = stats["by_creator"].get(conc.created_by, 0) + 1
+    return stats
