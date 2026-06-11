@@ -334,18 +334,18 @@ def page_schemes():
                         st.success(f"方案 '{scheme.name}' 已解锁")
             with c2:
                 ok_export, msg_export = validate_export_scheme(scheme)
-                if st.button("导出方案", key=f"export_scheme_{scheme.id}", disabled=not ok_export):
-                    if not ok_export:
-                        st.error(f"导出失败: {msg_export}")
-                    else:
-                        export_data = scheme.to_dict()
-                        json_str = json.dumps(export_data, ensure_ascii=False, indent=2)
-                        st.download_button(
-                            "下载方案JSON", data=json_str,
-                            file_name=f"scheme_{scheme.id}.json", mime="application/json",
-                            key=f"dl_scheme_{scheme.id}",
-                        )
-                elif not ok_export:
+                if ok_export:
+                    export_data = scheme.to_dict()
+                    export_json = json.dumps(export_data, ensure_ascii=False, indent=2)
+                    st.download_button(
+                        "导出方案",
+                        data=export_json,
+                        file_name=f"scheme_{scheme.id}.json",
+                        mime="application/json",
+                        key=f"export_scheme_{scheme.id}",
+                    )
+                else:
+                    st.button("导出方案", disabled=True, key=f"export_scheme_dis_{scheme.id}")
                     st.caption(f"⚠️ {msg_export}")
             with c3:
                 if st.button("删除方案", key=f"del_scheme_{scheme.id}"):
@@ -398,17 +398,18 @@ def page_import_export():
     st.header("导入 / 导出")
 
     st.subheader("导出全部数据")
-    if st.button("导出当前所有残片与方案", key="export_all_btn"):
-        export = {
-            "fragments": [f.to_dict() for f in st.session_state.fragments],
-            "schemes": [s.to_dict() for s in st.session_state.schemes],
-        }
-        json_str = json.dumps(export, ensure_ascii=False, indent=2)
-        st.download_button(
-            "下载完整数据JSON", data=json_str,
-            file_name="rubbing_analysis_all.json", mime="application/json",
-            key="dl_all",
-        )
+    export = {
+        "fragments": [f.to_dict() for f in st.session_state.fragments],
+        "schemes": [s.to_dict() for s in st.session_state.schemes],
+    }
+    json_str = json.dumps(export, ensure_ascii=False, indent=2)
+    st.download_button(
+        "导出当前所有残片与方案",
+        data=json_str,
+        file_name="rubbing_analysis_all.json",
+        mime="application/json",
+        key="export_all_btn",
+    )
 
     st.divider()
     st.subheader("导入方案")

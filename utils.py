@@ -169,12 +169,12 @@ def compute_scheme_conflicts(scheme, all_schemes, fragments):
 
 
 def validate_edge_exclusivity(scheme):
-    edge_usage = {}
+    edge_ids_seen = set()
     for m in scheme.matches:
-        for eid, fid in [(m.edge_a_id, m.edge_a_fragment_id), (m.edge_b_id, m.edge_b_fragment_id)]:
-            if eid in edge_usage and edge_usage[eid] != fid:
-                return False, f"边缘 {eid} 在方案中匹配了多个对象"
-            edge_usage[eid] = fid
+        for eid in [m.edge_a_id, m.edge_b_id]:
+            if eid in edge_ids_seen:
+                return False, f"边缘 {eid} 在方案中被重复匹配了多个对象"
+            edge_ids_seen.add(eid)
     return True, ""
 
 
@@ -210,11 +210,18 @@ def validate_import_scheme(scheme_dict, existing_schemes, existing_fragments):
     except Exception as e:
         return None, f"方案格式无效: {str(e)}"
 
+    frag_map = {f.id: f for f in existing_fragments}
     for m in scheme.matches:
-        frag_a_exists = any(f.id == m.edge_a_fragment_id for f in existing_fragments)
-        frag_b_exists = any(f.id == m.edge_b_fragment_id for f in existing_fragments)
-        if not frag_a_exists or not frag_b_exists:
-            return None, f"候选关系引用了不存在的残片 ({m.edge_a_fragment_id}, {m.edge_b_fragment_id})"
+        if m.edge_a_fragment_id not in frag_map:
+            return None, f"候选关系引用了不存在的残片 {m.edge_a_fragment_id}"
+        if m.edge_b_fragment_id not in frag_map:
+            return None, f"候选关系引用了不存在的残片 {m.edge_b_fragment_id}"
+        frag_a = frag_map[m.edge_a_fragment_id]
+        frag_b = frag_map[m.edge_b_fragment_id]
+        if not any(e.id == m.edge_a_id for e in frag_a.edges):
+            return None, f"残片 {m.edge_a_fragment_id} 中不存在边缘 {m.edge_a_id}"
+        if not any(e.id == m.edge_b_id for e in frag_b.edges):
+            return None, f"残片 {m.edge_b_fragment_id} 中不存在边缘 {m.edge_b_id}"
 
     for existing in existing_schemes:
         if existing.id == scheme.id:
