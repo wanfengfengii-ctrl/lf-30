@@ -911,7 +911,8 @@ def search_fragments(
     return results
 
 
-def cluster_fragments(fragments, annotations, method="tag_based", n_clusters=3):
+def cluster_fragments(fragments, annotations, schemes=None, method="tag_based", n_clusters=3):
+    schemes = schemes or []
     clusters = []
     if not fragments:
         return clusters
@@ -1000,9 +1001,9 @@ def cluster_fragments(fragments, annotations, method="tag_based", n_clusters=3):
     elif method == "ownership_based":
         groups = {}
         for frag in fragments:
-            status = get_fragment_ownership_status(frag, [])
+            status = get_fragment_ownership_status(frag, schemes)
             key = status.value
-            if frag.locked_scheme_id:
+            if status == SchemeOwnershipStatus.LOCKED and frag.locked_scheme_id:
                 key = f"LOCKED:{frag.locked_scheme_id}"
             if key not in groups:
                 groups[key] = []

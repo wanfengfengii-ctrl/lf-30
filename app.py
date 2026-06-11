@@ -1169,8 +1169,22 @@ def page_tag_management():
             with col_act:
                 if st.button("🗑️", key=f"del_tag_{tag.id}", help="删除标签"):
                     st.session_state.custom_tags = [t for t in st.session_state.custom_tags if t.id != tag.id]
+
+                    tag_fields = [
+                        "glyph_components", "knife_marks", "weathering_features",
+                        "edge_textures", "inscription_tags", "research_tags",
+                        "custom_tag_ids",
+                    ]
+                    cleaned_count = 0
+                    for ann in st.session_state.semantic_annotations:
+                        for field in tag_fields:
+                            field_val = getattr(ann, field)
+                            if isinstance(field_val, list) and tag.id in field_val:
+                                setattr(ann, field, [tid for tid in field_val if tid != tag.id])
+                                cleaned_count += 1
+
                     add_log(OperationType.TAG_DELETE, "tag", tag.id,
-                            f"删除标签 '{tag.name}'")
+                            f"删除标签 '{tag.name}'，同步清理 {cleaned_count} 处标注引用")
                     st.rerun()
         st.divider()
 
@@ -1519,11 +1533,17 @@ def page_semantic_search():
                         (ann.knife_marks, TagCategory.KNIFE_MARK),
                         (ann.weathering_features, TagCategory.WEATHERING),
                         (ann.edge_textures, TagCategory.EDGE_TEXTURE),
+                        (ann.inscription_tags, TagCategory.INSCRIPTION_TAG),
+                        (ann.research_tags, TagCategory.RESEARCH_TAG),
+                        (ann.custom_tag_ids, TagCategory.CUSTOM),
                     ]
                     pills_html = ""
                     all_tag_names = {t.id: t.name for t in st.session_state.custom_tags}
+                    valid_tag_ids = set(all_tag_names.keys())
                     for tag_ids, cat in tag_parts:
                         for tid in tag_ids:
+                            if tid not in valid_tag_ids:
+                                continue
                             tname = all_tag_names.get(tid, tid)
                             color = tag_color_map.get(tid, "#4ECDC4")
                             if tid in result.matched_tags:
@@ -1586,18 +1606,23 @@ def page_semantic_search():
                             st.markdown(f"- **标注人:** {ann.annotated_by}")
                             st.markdown(f"- **标注时间:** {ann.annotated_at}")
 
-                            for title, attr, cat in [
-                                ("🔠 字形部件", "glyph_components", TagCategory.GLYPH_COMPONENT),
-                                ("🔪 刀痕形态", "knife_marks", TagCategory.KNIFE_MARK),
-                                ("🌪️ 风化特征", "weathering_features", TagCategory.WEATHERING),
-                                ("⛰️ 边缘纹理", "edge_textures", TagCategory.EDGE_TEXTURE),
-                                ("🏷️ 题跋标签", "inscription_tags", TagCategory.INSCRIPTION_TAG),
-                                ("🔬 研究标签", "research_tags", TagCategory.RESEARCH_TAG),
+                            _all_tag_names = {t.id: t.name for t in st.session_state.custom_tags}
+                            _valid_tag_ids = set(_all_tag_names.keys())
+
+                            for title, attr in [
+                                ("🔠 字形部件", "glyph_components"),
+                                ("🔪 刀痕形态", "knife_marks"),
+                                ("🌪️ 风化特征", "weathering_features"),
+                                ("⛰️ 边缘纹理", "edge_textures"),
+                                ("🏷️ 题跋标签", "inscription_tags"),
+                                ("🔬 研究标签", "research_tags"),
+                                ("✨ 自定义标签", "custom_tag_ids"),
                             ]:
                                 tag_ids = getattr(ann, attr, [])
                                 if tag_ids:
-                                    names = [all_tag_names.get(t, t) for t in tag_ids]
-                                    st.markdown(f"- **{title}:** {', '.join(names)}")
+                                    names = [_all_tag_names.get(t) for t in tag_ids if t in _valid_tag_ids]
+                                    if names:
+                                        st.markdown(f"- **{title}:** {', '.join(names)}")
 
                             if ann.inscription_content:
                                 st.markdown(f"- **📜 题跋考释:**\n\n  {ann.inscription_content}")
@@ -1683,6 +1708,7 @@ def page_analysis_visualization():
                 clusters = cluster_fragments(
                     st.session_state.fragments,
                     st.session_state.semantic_annotations,
+                    st.session_state.schemes,
                     method=method_key
                 )
                 st.session_state.fragment_clusters = clusters
